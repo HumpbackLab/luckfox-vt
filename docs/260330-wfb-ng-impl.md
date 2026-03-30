@@ -52,19 +52,99 @@
 - monitor 稳定性问题的主要矛盾在软件路径，而不是单纯硬件故障
 - 去掉默认 managed Wi-Fi 启动逻辑后，当前 `RTL8812AU` monitor 路径已经基本打通
 
-但当前仍有一个明确阻塞点：
+在本轮继续推进中，已经定位并修复此前 `wfb-ng-min` 没有进入最终 rootfs 的两个直接原因：
 
-- 板端镜像里仍然缺少：
+- Buildroot 实际使用的 `configs/luckfox_pico_defconfig` / `configs/luckfox_pico_w_defconfig`
+  此前没有同步板级新增的：
+  - `BR2_PACKAGE_WFB_NG_MIN`
+  - `BR2_PACKAGE_LIBPCAP`
+  - `BR2_PACKAGE_LIBSODIUM`
+  - `BR2_PACKAGE_LIBEVENT`
+  - `BR2_PACKAGE_ETHTOOL`
+  - `BR2_PACKAGE_TCPDUMP`
+- `package/wfb-ng-min/wfb-ng-min.hash` 中 tarball 文件名写成了：
+  - `wfb-ng-wfb-ng-25.01.2.tar.gz`
+  但 Buildroot 实际下载并校验的文件名是：
+  - `wfb-ng-min-wfb-ng-25.01.2.tar.gz`
+
+修复后，本地重新执行 Buildroot 定向构建与 `./build.sh rootfs`，结果如下：
+
+- `wfb-ng-min` 已可成功编译并安装到 Buildroot target：
+  - `sysdrv/source/buildroot/buildroot-2023.02.6/output/target/usr/bin/wfb_tx`
+  - `sysdrv/source/buildroot/buildroot-2023.02.6/output/target/usr/bin/wfb_rx`
+  - `sysdrv/source/buildroot/buildroot-2023.02.6/output/target/usr/bin/wfb_keygen`
+  - `sysdrv/source/buildroot/buildroot-2023.02.6/output/target/usr/bin/wfb_tun`
+- 最终 SDK rootfs 已包含上述二进制：
+  - `output/out/rootfs_uclibc_rv1106/usr/bin/wfb_tx`
+  - `output/out/rootfs_uclibc_rv1106/usr/bin/wfb_rx`
+  - `output/out/rootfs_uclibc_rv1106/usr/bin/wfb_keygen`
+  - `output/out/rootfs_uclibc_rv1106/usr/bin/wfb_tun`
+- 打包产物 `output/out/sysdrv_out/rootfs_uclibc_rv1106.tar` 中也已确认包含它们
+
+因此当前阶段结论更新为：
+
+- `wlan0` 的 monitor 运行环境已经具备
+- `wfb-ng-min` 最小数据面二进制已经进入最终 rootfs 打包产物
+- 下一步主问题从“二进制未进镜像”切换为“重新烧录后在板端完成 `wfb-start.sh` / `wfb_tx` / `wfb_rx` 实机联调”
+
+后续通过 `ttyUSB0` 串口再次登录板端复核，当前实测状态进一步更新为：
+
+- 串口登录正常：
+  - 用户 `root`
+  - 密码 `luckfox`
+- 板端已确认存在以下二进制：
   - `/usr/bin/wfb_tx`
   - `/usr/bin/wfb_rx`
   - `/usr/bin/wfb_keygen`
   - `/usr/bin/wfb_tun`
-- 只有 `/usr/bin/wfb-start.sh` 已进入镜像
+  - `/usr/bin/wfb-start.sh`
+- `ethtool -i wlan0` 显示驱动为：
+  - `rtl88xxau_wfb`
+- `iw phy info` 显示设备支持：
+  - `monitor`
+- 板端当前无以下常规 Wi-Fi 管理进程：
+  - `wpa_supplicant`
+  - `rkwifi_server`
+  - `hostapd`
+  - `udhcpc`
+  - `dhcpcd`
 
-因此当前阶段结论是：
+本轮串口联调中，一开始曾出现一次异常现象：
 
-- `wlan0` 的 monitor 运行环境已经具备
-- 下一步主问题不再是 monitor 稳定性，而是 `wfb-ng-min` 的二进制没有真正进入最终 rootfs
+- 在执行 `iw dev wlan0 set type monitor` 时触发：
+  - `usb 1-1: USB disconnect`
+  - 随后又出现 `Cannot enable` / `attempt power cycle`
+
+但在用户重新插拔网卡后，当前状态已经恢复并且复测通过：
+
+- `wlan0` 已重新枚举成功
+- 当前 `iw dev` 已显示：
+  - `type monitor`
+  - `channel 149`
+- 手动执行以下步骤已成功：
+  - `ip link set wlan0 down`
+  - `iw dev wlan0 set type monitor`
+  - `ip link set wlan0 up`
+  - `iw dev wlan0 set channel 149 HT20`
+- `WFB_CHANNEL=149 /usr/bin/wfb-start.sh monitor` 成功
+- `/usr/bin/wfb_keygen` 成功，已生成：
+  - `/etc/wfb/drone.key`
+  - `/etc/wfb/gs.key`
+- `WFB_CHANNEL=149 /usr/bin/wfb-start.sh tx` 成功拉起 `wfb_tx`
+  - 日志显示已监听：
+    - UDP `5600`
+    - management 端口
+
+基于当前串口实测，阶段结论再次更新为：
+
+- `RTL8812AU + rtl88xxau_wfb` 在当前板端环境下，已经可以稳定进入 `monitor`
+- `wfb-start.sh monitor`
+- `wfb_keygen`
+- `wfb-start.sh tx`
+  三条最小发送端链路均已实机跑通
+- 下一步主任务切换为：
+  - 在另一端准备 `wfb_rx`
+  - 完成最小 `tx/rx` 对通验证
 
 ## 1. 目标
 
