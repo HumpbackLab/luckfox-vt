@@ -84,7 +84,7 @@ export RK_UBOOT_DEFCONFIG=luckfox_rv1106_uboot_defconfig
 export RK_KERNEL_DEFCONFIG=luckfox_rv1106_linux_defconfig
 
 # Kernel defconfig fragment
-export RK_KERNEL_DEFCONFIG_FRAGMENT=rv1106-bt.config
+export RK_KERNEL_DEFCONFIG_FRAGMENT="rv1106-bt.config rv1106-usbwifi.config"
 
 # Config sensor IQ files
 # RK_CAMERA_SENSOR_IQFILES format:

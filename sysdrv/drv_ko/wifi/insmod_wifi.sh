@@ -94,6 +94,18 @@ if [ $? -eq 0 ]; then
 	insmod ssv6x5x.ko
 fi
 
+#ath9k_htc ar9271
+cat /sys/bus/usb/devices/*/uevent | grep -i "cf3\/9271"
+if [ $? -eq 0 ]; then
+	insmod cfg80211.ko
+	insmod libarc4.ko
+	insmod mac80211.ko
+	insmod ath.ko
+	insmod ath9k_hw.ko
+	insmod ath9k_common.ko
+	insmod ath9k_htc.ko
+fi
+
 #atbm603x
 cat /sys/bus/sdio/devices/*/uevent | grep "007A\:6011"
 if [ $? -eq 0 ]; then

@@ -100,6 +100,10 @@ export RK_CAMERA_SENSOR_CAC_BIN="CAC_sc4336_OT01_40IRC_F16"
 # enable install app to oem partition
 export RK_BUILD_APP_TO_OEM_PARTITION=y
 
+# enable wifi
+export RK_ENABLE_WIFI=y
+export RK_ENABLE_WIFI_CHIP=AR9271
+
 # enable rockchip test
 export RK_ENABLE_ROCKCHIP_TEST=y
 
