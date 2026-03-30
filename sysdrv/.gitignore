@@ -7,6 +7,18 @@ out
 # source
 source/busybox
 source/buildroot
+!source/buildroot/
+source/buildroot/*
+!source/buildroot/buildroot-2023.02.6/
+source/buildroot/buildroot-2023.02.6/*
+!source/buildroot/buildroot-2023.02.6/package/
+source/buildroot/buildroot-2023.02.6/package/*
+!source/buildroot/buildroot-2023.02.6/package/Config.in
+!source/buildroot/buildroot-2023.02.6/package/wfb-ng-min/
+source/buildroot/buildroot-2023.02.6/package/wfb-ng-min/*
+!source/buildroot/buildroot-2023.02.6/package/wfb-ng-min/Config.in
+!source/buildroot/buildroot-2023.02.6/package/wfb-ng-min/wfb-ng-min.hash
+!source/buildroot/buildroot-2023.02.6/package/wfb-ng-min/wfb-ng-min.mk
 # source/kernel
 # source/uboot
 tools/board/android-tools/android-tools/

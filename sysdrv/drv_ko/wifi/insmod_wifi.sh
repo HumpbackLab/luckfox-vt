@@ -172,11 +172,11 @@ if [ -n "$(cat /proc/device-tree/model | grep "W")" ] || \
 	sleep 0.1
 fi
 
-#start wifi app
+# WFB-only image: keep driver autoload, but never start the managed Wi-Fi stack.
 if ifconfig wlan0 2>&1 | grep -q "not found"; then
-	echo "wlan0 not found. Stop run rkwifi_server."
+	echo "wlan0 not found. Skip Wi-Fi userspace startup."
 elif [ "$RTL8812AU_SKIP_RKWIFI_SERVER" = "1" ]; then
-	echo "RTL8812AU detected. Skip rkwifi_server for monitor/WFB use."
+	echo "RTL8812AU detected. Keep wlan0 unmanaged for monitor/WFB use."
 else
-	rkwifi_server start >/dev/null 2>&1 &
+	echo "wlan0 present. Skip rkwifi_server and leave interface unmanaged."
 fi

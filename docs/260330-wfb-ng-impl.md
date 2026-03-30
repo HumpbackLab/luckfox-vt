@@ -15,6 +15,57 @@
 - `https://github.com/svpcom/wfb-ng/tree/wfb-ng-25.01.2`
 - `https://github.com/svpcom/rtl8812au`
 
+## 0. 当前进展
+
+截至本轮联调，以下内容已经落地并完成板端验证：
+
+- 已新增 `wfb-ng-min` Buildroot package：
+  - `sysdrv/source/buildroot/buildroot-2023.02.6/package/wfb-ng-min/`
+- 已把 `wfb-ng-min` 接入 Buildroot package 菜单：
+  - `sysdrv/source/buildroot/buildroot-2023.02.6/package/Config.in`
+- 已在以下 defconfig 中启用相关依赖与 `BR2_PACKAGE_WFB_NG_MIN`：
+  - `sysdrv/tools/board/buildroot/luckfox_pico_defconfig`
+  - `sysdrv/tools/board/buildroot/luckfox_pico_w_defconfig`
+- 已新增板端最小启动脚本：
+  - `project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-buildroot-init/usr/bin/wfb-start.sh`
+- 已修改 Wi-Fi 自动加载路径，避免系统默认把 `wlan0` 拉成 managed 联网模式：
+  - `project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-buildroot-init/etc/init.d/S99hciinit`
+  - `sysdrv/drv_ko/wifi/insmod_wifi.sh`
+
+本轮重新编译烧录后的板端实测结果：
+
+- 启动日志出现：
+  - `RTL8812AU detected. Keep wlan0 unmanaged for monitor/WFB use.`
+- 系统中无以下常规 Wi-Fi 管理进程：
+  - `wpa_supplicant`
+  - `udhcpc`
+  - `dhcpcd`
+  - `rkwifi_server`
+  - `hostapd`
+- `88XXau_wfb` / `mac80211` / `cfg80211` 已加载
+- `wlan0` 存在
+- `iw dev wlan0 set type monitor` 成功，`wlan0` 可稳定切到 `type monitor`
+- 本轮镜像上未再复现之前的 `USB disconnect`
+
+这说明：
+
+- monitor 稳定性问题的主要矛盾在软件路径，而不是单纯硬件故障
+- 去掉默认 managed Wi-Fi 启动逻辑后，当前 `RTL8812AU` monitor 路径已经基本打通
+
+但当前仍有一个明确阻塞点：
+
+- 板端镜像里仍然缺少：
+  - `/usr/bin/wfb_tx`
+  - `/usr/bin/wfb_rx`
+  - `/usr/bin/wfb_keygen`
+  - `/usr/bin/wfb_tun`
+- 只有 `/usr/bin/wfb-start.sh` 已进入镜像
+
+因此当前阶段结论是：
+
+- `wlan0` 的 monitor 运行环境已经具备
+- 下一步主问题不再是 monitor 稳定性，而是 `wfb-ng-min` 的二进制没有真正进入最终 rootfs
+
 ## 1. 目标
 
 目标拆成两层：
