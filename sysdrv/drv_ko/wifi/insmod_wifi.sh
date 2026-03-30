@@ -5,27 +5,58 @@ cd $_DIR
 
 export PATH=$PATH:/oem/usr/ko/
 
+RTL8812AU_SKIP_RKWIFI_SERVER=0
+
+insmod_if_present() {
+	ko_name="$1"
+	shift
+	[ -f "/oem/usr/ko/$ko_name" ] || return 0
+	insmod "/oem/usr/ko/$ko_name" "$@" 2>/dev/null || true
+}
+
+load_rtl8812au_module() {
+	for module in rtl88xxau_wfb.ko 88XXau_wfb.ko 8812au.ko; do
+		if [ -f "/oem/usr/ko/$module" ]; then
+			insmod_if_present libarc4.ko
+			insmod_if_present cfg80211.ko
+			insmod_if_present mac80211.ko
+			insmod "/oem/usr/ko/$module"
+			RTL8812AU_SKIP_RKWIFI_SERVER=1
+			return 0
+		fi
+	done
+
+	return 1
+}
+
 #for fastboot
 #insmod_wifi.ko ${RK_ENABLE_WIFI_CHIP} ${RK_ENABLE_FASTBOOT}
 if [ "${1}"x = "y"x ]; then
-	insmod dw_mmc.ko
-	insmod dw_mmc-pltfm.ko
-	insmod dw_mmc-rockchip.ko
 	case "$2" in
 	ATBM6441)
+		insmod dw_mmc.ko
+		insmod dw_mmc-pltfm.ko
+		insmod dw_mmc-rockchip.ko
 		insmod cfg80211.ko
 		insmod atbm6041_wifi_sdio.ko
+		rkwifi_server start &
+		exit 0
 		;;
 	HI3861L)
+		insmod dw_mmc.ko
+		insmod dw_mmc-pltfm.ko
+		insmod dw_mmc-rockchip.ko
 		# cat /sys/bus/sdio/devices/*/uevent | grep "0296:5347"
 		insmod /oem/usr/ko/hichannel.ko hi_rk_irq_gpio=40
+		rkwifi_server start &
+		exit 0
+		;;
+	"")
 		;;
 	*)
-		exit 1
+		echo "No dedicated fastboot Wi-Fi init for chip $2, continue autodetect."
 		;;
 	esac
-	rkwifi_server start &
-	exit 0
 fi
 
 #AIC8800DW
@@ -72,6 +103,12 @@ cat /sys/bus/usb/devices/*/uevent | grep "bda\/f179"
 if [ $? -eq 0 ]; then
 	insmod cfg80211.ko
 	insmod 8188fu.ko
+fi
+
+#rtl8812au
+cat /sys/bus/usb/devices/*/uevent | grep -Ei "PRODUCT=(0?bda/(8812|881a|a811|b812)|2357/010d|2001/3313|7392/a812|04ca/2006|0409/0408)"
+if [ $? -eq 0 ]; then
+	load_rtl8812au_module
 fi
 
 #ssv6115
@@ -138,6 +175,8 @@ fi
 #start wifi app
 if ifconfig wlan0 2>&1 | grep -q "not found"; then
 	echo "wlan0 not found. Stop run rkwifi_server."
+elif [ "$RTL8812AU_SKIP_RKWIFI_SERVER" = "1" ]; then
+	echo "RTL8812AU detected. Skip rkwifi_server for monitor/WFB use."
 else
 	rkwifi_server start >/dev/null 2>&1 &
 fi
