@@ -68,6 +68,8 @@ target_link_libraries(${PROJECT_NAME} pthread rockit rockchip_mpp rkaiq rtsp rka
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
 install(FILES rkipc-300w.ini DESTINATION share)
 install(FILES rkipc-400w.ini DESTINATION share)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../rv1106_ipc/rkipc-500w.ini DESTINATION share)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../rv1106_ipc/rkipc-mis5001-500w.ini DESTINATION share)
 install(FILES ../../common/speaker_test.wav DESTINATION share)
 install(PROGRAMS RkLunch.sh DESTINATION bin)
 install(PROGRAMS RkLunch-stop.sh DESTINATION bin)

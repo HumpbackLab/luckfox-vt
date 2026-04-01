@@ -1447,7 +1447,7 @@ static int mis5001_check_sensor_id(struct mis5001 *mis5001,
 		return -ENODEV;
 	}
 
-	dev_info(dev, "Detected mis4001 %04x sensor\n", MIS5001_CHIP_ID);
+	dev_info(dev, "Detected mis5001 %04x sensor\n", MIS5001_CHIP_ID);
 
 	return 0;
 }
