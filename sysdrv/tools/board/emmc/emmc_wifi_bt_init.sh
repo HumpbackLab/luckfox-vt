@@ -30,6 +30,8 @@ if [ "$(cat /proc/device-tree/model)" == "Luckfox Pico Ultra W" ]; then
 	if [ -f /etc/wpa_supplicant.conf ] && [ -n "$(ifconfig | grep "wlan0")" ]; then
 		wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf >/dev/null
 		chmod a+x /usr/share/udhcpc/default.script
+		pkill -f "udhcpc -i wlan0" 2>/dev/null
+		udhcpc -i wlan0 -T 1 -A 0 -b -q &
 	fi
 else
 	echo "This Luckfox Pico model don't support WIFI!"

@@ -6,12 +6,94 @@ cd $_DIR
 export PATH=$PATH:/oem/usr/ko/
 
 RTL8812AU_SKIP_RKWIFI_SERVER=0
+WIFI_MODE_FILE=/userdata/wifi_mode
 
 insmod_if_present() {
 	ko_name="$1"
 	shift
 	[ -f "/oem/usr/ko/$ko_name" ] || return 0
 	insmod "/oem/usr/ko/$ko_name" "$@" 2>/dev/null || true
+}
+
+have_cmd() {
+	command -v "$1" >/dev/null 2>&1
+}
+
+get_wifi_mode() {
+	if [ -n "$RK_WIFI_MODE" ]; then
+		printf '%s' "$RK_WIFI_MODE"
+		return 0
+	fi
+
+	if [ -f "$WIFI_MODE_FILE" ]; then
+		tr -d ' \t\r\n' < "$WIFI_MODE_FILE"
+		return 0
+	fi
+
+	return 0
+}
+
+should_keep_wlan0_unmanaged() {
+	wifi_mode="$(get_wifi_mode)"
+
+	if [ "$RTL8812AU_SKIP_RKWIFI_SERVER" != "1" ]; then
+		return 1
+	fi
+
+	case "$wifi_mode" in
+	managed|sta|client)
+		echo "RTL8812AU monitor/WFB mode overridden by '$wifi_mode'. Start managed Wi-Fi stack."
+		return 1
+		;;
+	""|monitor|wfb)
+		echo "RTL8812AU detected. Keep wlan0 unmanaged for monitor/WFB use."
+		return 0
+		;;
+	*)
+		echo "Unknown Wi-Fi mode '$wifi_mode'. Keep wlan0 unmanaged."
+		return 0
+		;;
+	esac
+}
+
+start_wifi_userspace() {
+	if ! ip link show wlan0 >/dev/null 2>&1; then
+		echo "wlan0 not found. Skip Wi-Fi userspace startup."
+		return 0
+	fi
+
+	if should_keep_wlan0_unmanaged; then
+		return 0
+	fi
+
+	if have_cmd rkwifi_server; then
+		echo "wlan0 present. Starting rkwifi_server."
+		rkwifi_server start &
+		return 0
+	fi
+
+	if have_cmd wpa_supplicant && [ -f /etc/wpa_supplicant.conf ]; then
+		echo "wlan0 present. Starting wpa_supplicant."
+		ifconfig wlan0 up
+		killall wpa_supplicant 2>/dev/null || true
+		killall dhcpcd 2>/dev/null || true
+		killall udhcpc 2>/dev/null || true
+		rm -rf /var/run/wpa_supplicant 2>/dev/null || true
+		mkdir -p /var/run/wpa_supplicant
+		wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf >/dev/null 2>&1 || \
+			wpa_supplicant -B -D nl80211 -i wlan0 -c /etc/wpa_supplicant.conf >/dev/null 2>&1 || \
+			return 1
+		if have_cmd dhcpcd; then
+			dhcpcd wlan0 -AL -t 0 &
+		elif have_cmd udhcpc; then
+			chmod a+x /usr/share/udhcpc/default.script 2>/dev/null || true
+			udhcpc -i wlan0 -T 1 -A 0 -b -q &
+		fi
+		return 0
+	fi
+
+	echo "wlan0 present, but no supported Wi-Fi userspace manager was found."
+	return 0
 }
 
 load_rtl8812au_module() {
@@ -21,7 +103,11 @@ load_rtl8812au_module() {
 			insmod_if_present cfg80211.ko
 			insmod_if_present mac80211.ko
 			insmod "/oem/usr/ko/$module"
-			RTL8812AU_SKIP_RKWIFI_SERVER=1
+			case "$module" in
+			*_wfb.ko)
+				RTL8812AU_SKIP_RKWIFI_SERVER=1
+				;;
+			esac
 			return 0
 		fi
 	done
@@ -140,7 +226,9 @@ if [ $? -eq 0 ]; then
 	insmod ath.ko
 	insmod ath9k_hw.ko
 	insmod ath9k_common.ko
-	insmod ath9k_htc.ko
+	# AR9271 fails WPA2 4-way handshake when PTK installation uses hw crypto.
+	# Force software crypto so STA mode can connect reliably.
+	insmod ath9k_htc.ko nohwcrypt=1
 fi
 
 #atbm603x
@@ -172,11 +260,4 @@ if [ -n "$(cat /proc/device-tree/model | grep "W")" ] || \
 	sleep 0.1
 fi
 
-# WFB-only image: keep driver autoload, but never start the managed Wi-Fi stack.
-if ifconfig wlan0 2>&1 | grep -q "not found"; then
-	echo "wlan0 not found. Skip Wi-Fi userspace startup."
-elif [ "$RTL8812AU_SKIP_RKWIFI_SERVER" = "1" ]; then
-	echo "RTL8812AU detected. Keep wlan0 unmanaged for monitor/WFB use."
-else
-	echo "wlan0 present. Skip rkwifi_server and leave interface unmanaged."
-fi
+start_wifi_userspace

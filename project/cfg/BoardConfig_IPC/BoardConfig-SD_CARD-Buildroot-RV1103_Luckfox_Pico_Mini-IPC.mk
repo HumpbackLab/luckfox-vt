@@ -102,7 +102,9 @@ export RK_BUILD_APP_TO_OEM_PARTITION=y
 
 # enable wifi
 export RK_ENABLE_WIFI=y
-export RK_ENABLE_WIFI_CHIP=RTL8812AU
+export RK_ENABLE_WIFI_CHIP=AR9271
+export LF_WIFI_SSID="byd"
+export LF_WIFI_PSK="12345qwert"
 
 # enable rockchip test
 export RK_ENABLE_ROCKCHIP_TEST=y
