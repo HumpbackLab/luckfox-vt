@@ -222,6 +222,13 @@ cat /sys/bus/usb/devices/*/uevent | grep -i "cf3\/9271"
 if [ $? -eq 0 ]; then
 	insmod cfg80211.ko
 	insmod libarc4.ko
+	# AR9271 with nohwcrypt=1 relies on software CCMP via mac80211/crypto API.
+	# Without these crypto modules, ieee80211_key_alloc("ccm(aes)") returns -ENOENT
+	# and WPA2 4-way handshake fails at NL80211_CMD_NEW_KEY.
+	insmod ctr.ko
+	insmod ccm.ko
+	insmod libaes.ko
+	insmod aes_generic.ko
 	insmod mac80211.ko
 	insmod ath.ko
 	insmod ath9k_hw.ko

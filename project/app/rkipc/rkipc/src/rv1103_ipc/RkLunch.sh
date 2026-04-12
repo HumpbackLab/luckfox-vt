@@ -118,11 +118,9 @@ post_chk() {
 		cp -fa /oem/usr/share/image.bmp /userdata/
 	fi
 
-	if [ -d "/oem/usr/share/iqfiles" ]; then
-		rkipc -a /oem/usr/share/iqfiles &
-	else
-		rkipc &
-	fi
+	# Keep kernel/module bring-up and Wi-Fi init, but skip rkipc autostart
+	# so network issues can be debugged without camera pipeline load.
+	echo "Skip rkipc autostart for Wi-Fi debugging"
 }
 
 rcS
