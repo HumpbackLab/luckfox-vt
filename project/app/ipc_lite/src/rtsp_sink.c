@@ -76,7 +76,7 @@ static int rtsp_sink_write(IPC_LITE_STREAM_SINK *sink,
   ret = rtsp_tx_video(context->session, packet->data, (int)packet->len,
                       packet->pts);
   rtsp_do_event(context->demo);
-  if (ret != 0) {
+  if (ret < 0) {
     time_t now = time(NULL);
 
     context->error_count++;

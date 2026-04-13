@@ -74,8 +74,8 @@ static int vi_chn_init(const IPC_LITE_CONFIG *config) {
   chn_attr.enPixelFormat = RK_FMT_YUV420SP;
   chn_attr.enCompressMode = COMPRESS_MODE_NONE;
   chn_attr.u32Depth = 0;
-  chn_attr.stFrameRate.s32SrcFrameRate = -1;
-  chn_attr.stFrameRate.s32DstFrameRate = -1;
+  chn_attr.stFrameRate.s32SrcFrameRate = config->video.fps;
+  chn_attr.stFrameRate.s32DstFrameRate = config->video.fps;
   chn_attr.stIspOpt.u32BufCount = (RK_U32)config->video.input_buffer_count;
   chn_attr.stIspOpt.enMemoryType = VI_V4L2_MEMORY_TYPE_DMABUF;
   chn_attr.stIspOpt.stMaxSize.u32Width = (RK_U32)config->video.max_width;
@@ -94,6 +94,192 @@ static int vi_chn_init(const IPC_LITE_CONFIG *config) {
   }
 
   return 0;
+}
+
+static void apply_h264_defaults(int venc_channel) {
+  static const RK_U32 thrd_i[16] = {0, 0, 0, 0, 3, 3, 5, 5,
+                                    8, 8, 8, 15, 15, 20, 25, 25};
+  static const RK_U32 thrd_p[16] = {0, 0, 0, 0, 3, 3, 5, 5,
+                                    8, 8, 8, 15, 15, 20, 25, 25};
+  static const RK_S32 aq_step_i[16] = {-8, -7, -6, -5, -4, -3, -2, -1,
+                                       0,  1,  2,  3,  4,  5,  7,  8};
+  static const RK_S32 aq_step_p[16] = {-8, -7, -6, -5, -4, -3, -2, -1,
+                                       0,  1,  2,  3,  4,  5,  7,  8};
+  VENC_RC_PARAM_S rc_param;
+  VENC_RC_PARAM2_S rc_param2;
+  VENC_H264_QBIAS_S qbias;
+  VENC_H264_TRANS_S trans;
+  VENC_FILTER_S filter;
+  VENC_ANTI_RING_S anti_ring;
+  VENC_ANTI_LINE_S anti_line;
+  VENC_LAMBDA_S lambda;
+
+  memset(&rc_param, 0, sizeof(rc_param));
+  if (RK_MPI_VENC_GetRcParam(venc_channel, &rc_param) == RK_SUCCESS) {
+    rc_param.stParamH264.u32MinQp = 20;
+    rc_param.stParamH264.u32FrmMinIQp = 26;
+    rc_param.stParamH264.u32FrmMinQp = 28;
+    rc_param.stParamH264.u32FrmMaxIQp = 51;
+    rc_param.stParamH264.u32FrmMaxQp = 51;
+    RK_MPI_VENC_SetRcParam(venc_channel, &rc_param);
+  }
+
+  memset(&rc_param2, 0, sizeof(rc_param2));
+  if (RK_MPI_VENC_GetRcParam2(venc_channel, &rc_param2) == RK_SUCCESS) {
+    memcpy(rc_param2.u32ThrdI, thrd_i, sizeof(thrd_i));
+    memcpy(rc_param2.u32ThrdP, thrd_p, sizeof(thrd_p));
+    memcpy(rc_param2.s32AqStepI, aq_step_i, sizeof(aq_step_i));
+    memcpy(rc_param2.s32AqStepP, aq_step_p, sizeof(aq_step_p));
+    RK_MPI_VENC_SetRcParam2(venc_channel, &rc_param2);
+  }
+
+  memset(&qbias, 0, sizeof(qbias));
+  qbias.bEnable = RK_TRUE;
+  qbias.u32QbiasI = 171;
+  qbias.u32QbiasP = 85;
+  RK_MPI_VENC_SetH264Qbias(venc_channel, &qbias);
+
+  memset(&trans, 0, sizeof(trans));
+  if (RK_MPI_VENC_GetH264Trans(venc_channel, &trans) == RK_SUCCESS) {
+    trans.bScalingListValid = RK_FALSE;
+    RK_MPI_VENC_SetH264Trans(venc_channel, &trans);
+  }
+
+  memset(&filter, 0, sizeof(filter));
+  if (RK_MPI_VENC_GetFilter(venc_channel, &filter) == RK_SUCCESS) {
+    filter.u32StrengthI = 0;
+    filter.u32StrengthP = 0;
+    RK_MPI_VENC_SetFilter(venc_channel, &filter);
+  }
+
+  memset(&anti_ring, 0, sizeof(anti_ring));
+  if (RK_MPI_VENC_GetAntiRing(venc_channel, &anti_ring) == RK_SUCCESS) {
+    anti_ring.u32AntiRing = 2;
+    RK_MPI_VENC_SetAntiRing(venc_channel, &anti_ring);
+  }
+
+  memset(&anti_line, 0, sizeof(anti_line));
+  if (RK_MPI_VENC_GetAntiLine(venc_channel, &anti_line) == RK_SUCCESS) {
+    anti_line.u32AntiLine = 2;
+    RK_MPI_VENC_SetAntiLine(venc_channel, &anti_line);
+  }
+
+  memset(&lambda, 0, sizeof(lambda));
+  if (RK_MPI_VENC_GetLambda(venc_channel, &lambda) == RK_SUCCESS) {
+    lambda.u32Lambda = 4;
+    RK_MPI_VENC_SetLambda(venc_channel, &lambda);
+  }
+}
+
+static void apply_h265_defaults(int venc_channel) {
+  static const RK_U32 thrd_i[16] = {0, 0, 0, 0, 3, 3, 5, 5,
+                                    8, 8, 8, 15, 15, 20, 25, 25};
+  static const RK_U32 thrd_p[16] = {0, 0, 0, 0, 3, 3, 5, 5,
+                                    8, 8, 8, 15, 15, 20, 25, 25};
+  static const RK_S32 aq_step_i[16] = {-8, -7, -6, -5, -4, -3, -2, -1,
+                                       0,  1,  2,  3,  4,  5,  7,  8};
+  static const RK_S32 aq_step_p[16] = {-8, -7, -6, -5, -4, -3, -2, -1,
+                                       0,  1,  2,  3,  4,  5,  7,  8};
+  VENC_RC_PARAM_S rc_param;
+  VENC_RC_PARAM2_S rc_param2;
+  VENC_H265_QBIAS_S qbias;
+  VENC_FILTER_S filter;
+  VENC_ANTI_RING_S anti_ring;
+  VENC_ANTI_LINE_S anti_line;
+  VENC_LAMBDA_S lambda;
+
+  memset(&rc_param, 0, sizeof(rc_param));
+  if (RK_MPI_VENC_GetRcParam(venc_channel, &rc_param) == RK_SUCCESS) {
+    rc_param.stParamH265.u32MinQp = 20;
+    rc_param.stParamH265.u32FrmMinIQp = 26;
+    rc_param.stParamH265.u32FrmMinQp = 28;
+    rc_param.stParamH265.u32FrmMaxIQp = 51;
+    rc_param.stParamH265.u32FrmMaxQp = 51;
+    RK_MPI_VENC_SetRcParam(venc_channel, &rc_param);
+  }
+
+  memset(&rc_param2, 0, sizeof(rc_param2));
+  if (RK_MPI_VENC_GetRcParam2(venc_channel, &rc_param2) == RK_SUCCESS) {
+    memcpy(rc_param2.u32ThrdI, thrd_i, sizeof(thrd_i));
+    memcpy(rc_param2.u32ThrdP, thrd_p, sizeof(thrd_p));
+    memcpy(rc_param2.s32AqStepI, aq_step_i, sizeof(aq_step_i));
+    memcpy(rc_param2.s32AqStepP, aq_step_p, sizeof(aq_step_p));
+    RK_MPI_VENC_SetRcParam2(venc_channel, &rc_param2);
+  }
+
+  memset(&qbias, 0, sizeof(qbias));
+  qbias.bEnable = RK_TRUE;
+  qbias.u32QbiasI = 171;
+  qbias.u32QbiasP = 85;
+  RK_MPI_VENC_SetH265Qbias(venc_channel, &qbias);
+
+  memset(&filter, 0, sizeof(filter));
+  if (RK_MPI_VENC_GetFilter(venc_channel, &filter) == RK_SUCCESS) {
+    filter.u32StrengthI = 0;
+    filter.u32StrengthP = 0;
+    RK_MPI_VENC_SetFilter(venc_channel, &filter);
+  }
+
+  memset(&anti_ring, 0, sizeof(anti_ring));
+  if (RK_MPI_VENC_GetAntiRing(venc_channel, &anti_ring) == RK_SUCCESS) {
+    anti_ring.u32AntiRing = 2;
+    RK_MPI_VENC_SetAntiRing(venc_channel, &anti_ring);
+  }
+
+  memset(&anti_line, 0, sizeof(anti_line));
+  if (RK_MPI_VENC_GetAntiLine(venc_channel, &anti_line) == RK_SUCCESS) {
+    anti_line.u32AntiLine = 2;
+    RK_MPI_VENC_SetAntiLine(venc_channel, &anti_line);
+  }
+
+  memset(&lambda, 0, sizeof(lambda));
+  if (RK_MPI_VENC_GetLambda(venc_channel, &lambda) == RK_SUCCESS) {
+    lambda.u32Lambda = 4;
+    RK_MPI_VENC_SetLambda(venc_channel, &lambda);
+  }
+}
+
+static void sync_frame_rate(const IPC_LITE_CONFIG *config) {
+  VI_CHN_ATTR_S vi_attr;
+  VENC_CHN_ATTR_S venc_attr;
+
+  memset(&vi_attr, 0, sizeof(vi_attr));
+  if (RK_MPI_VI_GetChnAttr(0, config->video.vi_channel, &vi_attr) ==
+      RK_SUCCESS) {
+    vi_attr.stFrameRate.s32SrcFrameRate = config->video.fps;
+    vi_attr.stFrameRate.s32DstFrameRate = config->video.fps;
+    RK_MPI_VI_SetChnAttr(0, config->video.vi_channel, &vi_attr);
+  }
+
+  memset(&venc_attr, 0, sizeof(venc_attr));
+  if (RK_MPI_VENC_GetChnAttr(config->video.venc_channel, &venc_attr) !=
+      RK_SUCCESS) {
+    return;
+  }
+
+  if (config->video.codec == IPC_LITE_CODEC_H264) {
+    venc_attr.stVencAttr.enType = RK_VIDEO_ID_AVC;
+    if (venc_attr.stRcAttr.enRcMode == VENC_RC_MODE_H264CBR) {
+      venc_attr.stRcAttr.stH264Cbr.u32SrcFrameRateDen = 1;
+      venc_attr.stRcAttr.stH264Cbr.u32SrcFrameRateNum =
+          (RK_U32)config->video.fps;
+      venc_attr.stRcAttr.stH264Cbr.fr32DstFrameRateDen = 1;
+      venc_attr.stRcAttr.stH264Cbr.fr32DstFrameRateNum =
+          (RK_U32)config->video.fps;
+    }
+  } else {
+    venc_attr.stVencAttr.enType = RK_VIDEO_ID_HEVC;
+    if (venc_attr.stRcAttr.enRcMode == VENC_RC_MODE_H265CBR) {
+      venc_attr.stRcAttr.stH265Cbr.u32SrcFrameRateDen = 1;
+      venc_attr.stRcAttr.stH265Cbr.u32SrcFrameRateNum =
+          (RK_U32)config->video.fps;
+      venc_attr.stRcAttr.stH265Cbr.fr32DstFrameRateDen = 1;
+      venc_attr.stRcAttr.stH265Cbr.fr32DstFrameRateNum =
+          (RK_U32)config->video.fps;
+    }
+  }
+
+  RK_MPI_VENC_SetChnAttr(config->video.venc_channel, &venc_attr);
 }
 
 static void fill_h264_rc(VENC_CHN_ATTR_S *attr, const IPC_LITE_CONFIG *config) {
@@ -155,6 +341,14 @@ static int venc_init(const IPC_LITE_CONFIG *config) {
   if (ret != RK_SUCCESS) {
     IPC_LITE_LOGE("pipeline", "RK_MPI_VENC_CreateChn failed %#x", ret);
     return -1;
+  }
+
+  sync_frame_rate(config);
+
+  if (config->video.codec == IPC_LITE_CODEC_H264) {
+    apply_h264_defaults(config->video.venc_channel);
+  } else {
+    apply_h265_defaults(config->video.venc_channel);
   }
 
   ref_buf_attr.bEnable = config->video.enable_refer_buffer_share ? RK_TRUE
