@@ -502,6 +502,31 @@ int ipc_lite_pipeline_start(IPC_LITE_MPI_PIPELINE *pipeline,
   return 0;
 }
 
+int ipc_lite_pipeline_open_disabled_sinks(IPC_LITE_MPI_PIPELINE *pipeline,
+                                          const IPC_LITE_CONFIG *config) {
+  size_t i = 0;
+
+  if (!pipeline || !config) {
+    return -1;
+  }
+
+  pipeline->config = config;
+  for (i = 0; i < pipeline->sink_count; ++i) {
+    if (pipeline->sinks[i].enabled || !pipeline->sinks[i].open) {
+      continue;
+    }
+
+    if (pipeline->sinks[i].open(&pipeline->sinks[i], config,
+                                config->video.codec) != 0) {
+      IPC_LITE_LOGE("pipeline", "failed to open sink %s",
+                    pipeline->sinks[i].name);
+      return -1;
+    }
+  }
+
+  return 0;
+}
+
 void ipc_lite_pipeline_request_stop(IPC_LITE_MPI_PIPELINE *pipeline) {
   pipeline->stop_requested = true;
 }

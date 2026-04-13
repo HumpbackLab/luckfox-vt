@@ -20,6 +20,7 @@ int ipc_lite_isp_start(IPC_LITE_ISP_CONTEXT *context,
                        const IPC_LITE_CONFIG *config) {
   rk_aiq_static_info_t static_info;
   char hdr_mode[16];
+  const char *sensor_name = NULL;
 
   memset(context, 0, sizeof(*context));
 
@@ -34,13 +35,19 @@ int ipc_lite_isp_start(IPC_LITE_ISP_CONTEXT *context,
   setenv("HDR_MODE", hdr_mode, 1);
 
   memset(&static_info, 0, sizeof(static_info));
-  rk_aiq_uapi2_sysctl_enumStaticMetas(context->cam_id, &static_info);
+  rk_aiq_uapi2_sysctl_enumStaticMetasByPhyId(context->cam_id, &static_info);
+  sensor_name = static_info.sensor_info.sensor_name;
+
+  if (sensor_name && sensor_name[0] != '\0') {
+    rk_aiq_uapi2_sysctl_preInit_devBufCnt(sensor_name, "rkraw_rx", 2);
+    rk_aiq_uapi2_sysctl_preInit_scene(sensor_name, "normal", "day");
+  }
 
   IPC_LITE_LOGI("isp", "sensor=%s iq_dir=%s",
-                static_info.sensor_info.sensor_name, config->isp.iq_dir);
+                sensor_name ? sensor_name : "-", config->isp.iq_dir);
 
   context->aiq_ctx = rk_aiq_uapi2_sysctl_init(
-      static_info.sensor_info.sensor_name, config->isp.iq_dir, isp_err_callback,
+      sensor_name, config->isp.iq_dir, isp_err_callback,
       isp_sof_callback);
   if (!context->aiq_ctx) {
     IPC_LITE_LOGE("isp", "rk_aiq_uapi2_sysctl_init failed");
@@ -77,4 +84,3 @@ void ipc_lite_isp_stop(IPC_LITE_ISP_CONTEXT *context) {
   rk_aiq_uapi2_sysctl_deinit(context->aiq_ctx);
   memset(context, 0, sizeof(*context));
 }
-
