@@ -35,12 +35,18 @@ typedef struct {
 typedef struct {
   int width;
   int height;
+  int max_width;
+  int max_height;
   int fps;
   int gop;
   int bitrate_kbps;
   IPC_LITE_CODEC codec;
   int vi_channel;
   int venc_channel;
+  int input_buffer_count;
+  int venc_buffer_count;
+  int venc_buffer_size;
+  bool enable_refer_buffer_share;
   int venc_timeout_ms;
 } IPC_LITE_VIDEO_SECTION;
 
@@ -87,4 +93,3 @@ const char *ipc_lite_codec_name(IPC_LITE_CODEC codec);
 const char *ipc_lite_log_level_name(IPC_LITE_LOG_LEVEL level);
 
 #endif
-

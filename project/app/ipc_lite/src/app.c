@@ -50,12 +50,22 @@ static double elapsed_seconds(const struct timespec *start,
 
 static void log_config_summary(const IPC_LITE_CONFIG *config) {
   IPC_LITE_LOGI("app",
-                "config=%s codec=%s size=%dx%d fps=%d bitrate=%dkbps gop=%d",
+                "config=%s codec=%s size=%dx%d max=%dx%d fps=%d "
+                "bitrate=%dkbps gop=%d vi=%d venc=%d",
                 config->config_path, ipc_lite_codec_name(config->video.codec),
-                config->video.width, config->video.height, config->video.fps,
-                config->video.bitrate_kbps, config->video.gop);
-  IPC_LITE_LOGI("app", "aiq=%s iq_dir=%s rtsp=%s file=%s",
+                config->video.width, config->video.height,
+                config->video.max_width, config->video.max_height,
+                config->video.fps, config->video.bitrate_kbps,
+                config->video.gop, config->video.vi_channel,
+                config->video.venc_channel);
+  IPC_LITE_LOGI("app",
+                "aiq=%s iq_dir=%s in_buf=%d venc_buf=%d/%d ref_share=%s "
+                "rtsp=%s file=%s",
                 config->isp.enable_aiq ? "on" : "off", config->isp.iq_dir,
+                config->video.input_buffer_count,
+                config->video.venc_buffer_count,
+                config->video.venc_buffer_size,
+                config->video.enable_refer_buffer_share ? "on" : "off",
                 config->rtsp.enable ? "on" : "off",
                 config->file_output.enable ? config->file_output.path : "off");
 }
@@ -175,4 +185,3 @@ cleanup:
   ipc_lite_isp_stop(&isp);
   return ret;
 }
-

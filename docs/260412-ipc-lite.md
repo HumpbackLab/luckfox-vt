@@ -241,17 +241,25 @@ app bootstrap
 
 首版默认值按当前板子取保守配置：
 
-- `width=1280`
-- `height=720`
+- `width=704`
+- `height=576`
+- `max_width=704`
+- `max_height=576`
 - `fps=25`
 - `gop=50`
-- `bitrate_kbps=2048`
-- `codec=h264`
+- `bitrate_kbps=512`
+- `codec=h265`
+- `vi_channel=1`
+- `venc_channel=1`
+- `input_buffer_count=2`
+- `venc_buffer_count=4`
+- `venc_buffer_size=202752`
+- `enable_refer_buffer_share=true`
 - `enable_aiq=true`
 - `iq_dir=/oem/usr/share/iqfiles`
 - `rtsp.enable=false`
 - `file.enable=true`
-- `file.path=/tmp/ipc_lite.h264`
+- `file.path=/tmp/ipc_lite.h265`
 - `wifi.ifname=wlan0`
 
 ## 7. 编码与媒体实现策略
@@ -378,8 +386,9 @@ app bootstrap
 
 1. 本地交叉编译
 2. 取到二进制和配置文件
-3. 用串口上传至板子 `/root/ipc_lite/`
-4. 在板子上直接运行
+3. 优先用 `scp/ssh` 上传至板子 `/root/ipc_lite/`
+4. 网络不可用时，再退回串口上传
+5. 在板子上直接运行
 
 ## 10. 串口部署方案
 
@@ -391,9 +400,38 @@ app bootstrap
 - 不走升级工具
 - 不依赖用户手工复制粘贴
 
+同时，当前板子一旦接入可用 Wi-Fi，优先使用：
+
+- `ssh`
+- `scp`
+
+只有在网络不可用时，才回退到串口上传。
+
 ### 10.2 方案
 
-新增 `deploy_serial.py`，通过 `pyserial`：
+当前支持两种部署路径：
+
+#### A. 推荐：网络部署
+
+主机侧可直接：
+
+1. `scp` 上传：
+   - `ipc_lite`
+   - `ipc_lite.ini`
+   - `run.sh`
+2. `ssh` 到板子执行：
+   - `chmod +x`
+   - `./run.sh`
+
+优点：
+
+- 速度远高于串口
+- 更适合频繁迭代
+- 可直接保留一个前台 `ssh` shell 看日志
+
+#### B. 兜底：串口部署
+
+保留 `deploy_serial.py`，通过 `pyserial`：
 
 1. 打开 `/dev/ttyUSB0`
 2. 自动登录 `root/luckfox`
@@ -441,7 +479,18 @@ app bootstrap
 
 ### 12.2 部署侧
 
-- `python3 deploy_serial.py --port /dev/ttyUSB0 --run`
+- 优先：
+
+```sh
+scp project/app/ipc_lite/out/ipc_lite/{ipc_lite,ipc_lite.ini,run.sh} root@<board-ip>:/root/ipc_lite/
+ssh root@<board-ip> 'cd /root/ipc_lite && chmod +x ipc_lite run.sh && ./run.sh'
+```
+
+- 网络不可用时：
+
+```sh
+python3 deploy_serial.py --port /dev/ttyUSB0 --run
+```
 
 ### 12.3 板端验证
 
@@ -486,6 +535,77 @@ ffplay -rtsp_transport tcp rtsp://<board-ip>:554/live/0
 
 当前仓库里没有现成适合直接复用的轻量 RTMP 依赖，因此第一版只保留扩展面。
 
+### 13.4 当前板端不满足“5MP 主码流直接可用”
+
+本轮进一步实测后确认：
+
+- `mis5001` 驱动当前只暴露一个 mode：
+  - `2592x1944`
+  - `25fps`
+- 使用 `simple_vi_bind_venc` 测试 `1280x720` 时，无论走：
+  - `mainpath(0)`
+  - `selfpath(1)`
+  都会出现：
+  - `mipi-csi2-hw ERR1:0x10 (fs/fe mis,vc: 0)`
+  - `rkcif-mipi-lvds: ERROR: csi size err`
+  - `rkisp-vir0: CIF_ISP_PIC_SIZE_ERROR`
+- 使用 `2592x1944` 原生分辨率时，除上述问题外，还会进一步触发：
+  - `cma_alloc failed`
+  - `mpp_buffer_get invalid input`
+  - `rockit_rkisp_mpibuf_done` 相关 kernel panic
+
+因此，本轮后续调试不能再默认认为：
+
+- 720p 路径天然稳定
+- 5MP 主码流能直接作为基线
+
+### 13.5 `rkipc` 也会踩到相同的底层约束
+
+手动拉起 `rkipc -a /oem/usr/share/iqfiles` 后确认：
+
+- `554` 端口可监听
+- `rkipc` 当前使用的是 `mis5001` 的配置
+- 主码流配置仍是：
+  - `2592x1944@25`
+  - `H.265`
+- 子码流配置是：
+  - `704x576@25`
+  - `H.265`
+
+同时日志显示：
+
+- 主 5MP 路径同样会遇到 `CMA alloc failed`
+- 底层仍有 `csi size err / PIC_SIZE_ERROR`
+- 但 `rkipc` 至少还能把更小的通道继续拉起
+
+这意味着当前阶段应把 `rkipc` 视为：
+
+- 可用的对照样本
+- 但不是“完全健康、可直接照搬”的真值源
+
+### 13.6 当前板子的自动启动流程被人为修改过
+
+启动日志里有：
+
+```text
+Skip rkipc autostart for Wi-Fi debugging
+```
+
+说明板子当前不是标准出厂启动路径，`RkLunch.sh` 被改成了跳过 `rkipc` 自启动。
+
+这会影响：
+
+- 对“之前 `rkipc` 能出视频”的复现
+- 对官方工作链路的对照分析
+
+后续在复现 `rkipc` 时，应优先使用：
+
+- 手动启动
+- 明确 ini
+- 明确日志
+
+避免把启动环境差异误判为媒体链路差异
+
 ## 14. 第二阶段建议
 
 在第一版跑通后，再按无人机图传方向推进：
@@ -507,3 +627,254 @@ ffplay -rtsp_transport tcp rtsp://<board-ip>:554/live/0
 5. 板端前台运行成功
 6. 完成摄像头/编码链路实测
 
+## 16. 本轮新增发现
+
+### 16.1 `ipc_lite` 的 RTSP 控制面已验证通过
+
+主机侧已能对 `ipc_lite` 和官方 sample 完成：
+
+- `OPTIONS`
+- `DESCRIBE`
+- `SETUP`
+- `PLAY`
+
+其中，官方 sample 使用 `RTP/AVP/TCP interleaved` 已实测收到媒体包。
+
+这说明：
+
+- 局域网 RTSP 控制链路是通的
+- 当前黑屏不应简单归因到 RTSP 网络层
+
+### 16.2 `ipc_lite` 当前黑屏的主要原因仍是采集侧异常
+
+`ipc_lite` 运行时可以看到：
+
+- 周期统计在持续增长
+- 但码率极低
+- 典型 `last_len` 很小
+- RTSP sink 曾持续报错
+
+这说明当前送入 RTSP 的并不是稳定、正常的图像帧序列。
+
+### 16.3 `mis5001` 驱动已增加一版针对性修复
+
+本地已在：
+
+- `sysdrv/source/kernel/drivers/media/i2c/mis5001.c`
+
+加入一版修复思路：
+
+- 将完整 mode 寄存器初始化从 `start_stream()` 前移到 `s_power()`
+- 避免在 CSI 接收端正式开流时，sensor 仍在切 mode 寄存器
+
+该修复尚未经过新内核重编和上板验证。
+
+### 16.4 `ipc_lite` 已收敛到一个当前可复现的保守基线
+
+进一步实测后，`ipc_lite` 当前最稳的起步配置不是原先假设的 `1280x720`，而是：
+
+- `704x576`
+- `25fps`
+- `vi_channel=1`
+- `venc_channel=1`
+- `rkisp_selfpath`
+- `H.265`
+
+该路径在板端可稳定看到：
+
+- 周期统计持续增长
+- `timeouts=0`
+- `errors=0`
+- 文件输出持续增长
+
+说明：
+
+- 当前 `ipc_lite` 已经基本贴近 `rkipc` 的有效次码流路径
+- 第一阶段“先找一条能稳定工作的最小路径”目标已达成
+
+### 16.5 `RTSP + ffplay` 已验证可实际出画
+
+宿主机用：
+
+```sh
+ffplay -fflags nobuffer -flags low_delay -rtsp_transport tcp rtsp://<board-ip>:554/live/0
+```
+
+对 `ipc_lite` 的 `H.265` 流做了实际拉流验证，结果是：
+
+- `RTSP` 控制面正常
+- `ffplay` 能出画
+- 延迟大约在 `2s` 左右
+
+接流开始阶段会出现一组 `HEVC` 参考帧相关报错，但后续可恢复正常播放。
+
+结合当前配置：
+
+- `fps=25`
+- `gop=50`
+
+可推断当前约 `2s` 的首帧/恢复延迟，与 `IDR` 周期过长高度一致。
+
+### 16.6 `H.265` 当前仍明显优于 `H.264`
+
+本轮在板子重启后的干净环境里，重新做了 `H.264/H.265` 对照测试，且都尽量固定在：
+
+- `704x576`
+- `25fps`
+- `vi_channel=1`
+- `venc_channel=1`
+- `rkisp_selfpath`
+
+观察结果：
+
+- `H.265` 在有真实客户端拉流时，码率可爬升到约 `300~500 kbps`
+- `H.265` 的 `ffplay` 实际可播放
+- `H.264` 在当前链路下虽不再完全卡死，但大量输出都是极小包
+- `H.264` 在文件输出和 `RTSP` 探测下，典型统计只有约 `5~20 kbps`
+- `H.264` 的 `last_len` 长时间停留在很小的固定值，不能形成与 `H.265` 同等质量的有效视频流
+
+当前最合理的判断是：
+
+- 这不是单纯的 `RTSP` 问题
+- 而是当前 `mis5001 + selfpath + 现有底层异常` 组合下，`H.264` 编码路径的可用性明显差于 `H.265`
+
+因此，后续阶段不建议继续把主要精力投入在“让 `H.264` 成为当前默认路径”上。
+
+### 16.7 `RTSP sink` 已做降噪处理
+
+之前 `RTSP` 打开但没有活跃客户端时，`ipc_lite` 会在每一帧上都打印：
+
+- `sink rtsp write failed`
+
+现在已把该路径改成：
+
+- 内部限频统计
+- 大约每 `5s` 才打印一次告警
+
+这样可以保留问题可见性，同时避免前台日志被完全刷爆。
+
+### 16.8 网络部署路径已打通
+
+本轮确认在板子接入可用 Wi-Fi 后，可以稳定使用：
+
+- `ssh`
+- `scp`
+
+完成：
+
+- 上传新二进制
+- 上传配置文件
+- 板端前台运行
+- 前台查看日志
+
+因此，后续联调应默认优先使用网络部署，串口只作为兜底手段。
+
+## 17. 下一步 Debug 规划
+
+### 17.1 调试目标调整
+
+后续调试不再以“继续扩散编码方案尝试”为第一优先级，而改成：
+
+1. 固定 `H.265 + 704x576 + selfpath` 作为当前基线
+2. 在这条基线上继续降低延迟与提升稳定性
+3. 再回到更高分辨率和系统级问题
+
+### 17.2 优先路径：先贴近 `rkipc` 的小码流工作方式
+
+优先尝试让 `ipc_lite` 贴近 `rkipc` 的次级有效通道，而不是强行使用当前直接失败的 720p 路径。
+
+优先级如下：
+
+1. 先验证 `rkipc` 当前小码流/次路径的稳定输出情况
+2. 让 `ipc_lite` 增加更保守的默认路径：
+   - 更小分辨率
+   - 更低 buffer 压力
+   - 更贴近 `rkipc` 的通道选择
+3. 在此基础上再尝试回到 `720p`
+
+当前这一阶段已经基本完成，后续不再优先扩展：
+
+- `H.264` 默认路径
+- 更复杂的多编码组合
+
+而是先固定这条已经验证可用的 `H.265` 子路径。
+
+### 17.2.1 低延迟方向的直接动作
+
+在当前 `H.265` 基线上，下一步最直接、收益最高的尝试应是：
+
+1. 将 `gop` 从 `50` 降到 `25`
+2. 重新用 `ffplay` 实测：
+   - 起播等待时间
+   - 拖尾延迟
+   - 丢帧恢复时间
+3. 如有必要，再尝试更小的 `gop`
+
+这样做的原因是：
+
+- 当前 `ffplay` 可出画
+- 当前约 `2s` 延迟与 `gop=50@25fps` 强相关
+- 这是一个低风险、可快速验证的优化项
+
+### 17.3 并行主线：修复系统级约束
+
+后续需要并行处理两个系统级问题：
+
+#### A. CMA 太小
+
+当前 `.BoardConfig.mk` 中：
+
+```makefile
+export RK_BOOTARGS_CMA_SIZE="24M"
+```
+
+对 `2592x1944` 路径明显不够，已经实测打到：
+
+- `cma_alloc failed`
+- `mpp_buffer_get invalid input`
+- kernel panic
+
+后续计划：
+
+1. 增大 CMA
+2. 重启板子
+3. 再验证 `rkipc` 主码流和 sample 5MP 路径
+
+#### B. sensor/CSI 启动时序
+
+当前 `mis5001` 的 `fs/fe mis + csi size err` 仍是首要异常。
+
+后续计划：
+
+1. 带上 `mis5001.c` 补丁重编内核
+2. 上板验证是否改善：
+   - `csi size err`
+   - `PIC_SIZE_ERROR`
+   - 初始开流稳定性
+
+### 17.4 具体执行顺序
+
+建议按下面顺序推进：
+
+1. 固定当前 `H.265 + 704x576 + selfpath` 基线
+2. 把 `gop` 调低，复测 `ffplay` 延迟与恢复时间
+3. 保持这条基线不动，继续观察：
+   - `frame losed`
+   - `csi size err`
+   - `PIC_SIZE_ERROR`
+4. 修改 `CMA` 配置，重启验证
+5. 带 `mis5001.c` 补丁重编内核，重启验证
+6. 最后再回到 `720p` 和更高分辨率目标
+
+### 17.5 当前结论
+
+当前阶段最合理的判断是：
+
+- `ipc_lite` 当前已经有一条可复现、可拉流的最小有效路径
+- `H.265` 明显优于 `H.264`
+- 当前真正的主矛盾不在 `RTSP` 控制面，也不在是否支持双编码
+- 真正的主矛盾仍是：
+  - `mis5001` 当前链路稳定性
+  - `sensor/CSI` 启动与运行时序
+  - 板端 `CMA` 资源不足
+  - 更高分辨率路径尚未恢复健康

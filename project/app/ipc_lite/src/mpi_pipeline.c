@@ -76,10 +76,10 @@ static int vi_chn_init(const IPC_LITE_CONFIG *config) {
   chn_attr.u32Depth = 0;
   chn_attr.stFrameRate.s32SrcFrameRate = -1;
   chn_attr.stFrameRate.s32DstFrameRate = -1;
-  chn_attr.stIspOpt.u32BufCount = 4;
+  chn_attr.stIspOpt.u32BufCount = (RK_U32)config->video.input_buffer_count;
   chn_attr.stIspOpt.enMemoryType = VI_V4L2_MEMORY_TYPE_DMABUF;
-  chn_attr.stIspOpt.stMaxSize.u32Width = (RK_U32)config->video.width;
-  chn_attr.stIspOpt.stMaxSize.u32Height = (RK_U32)config->video.height;
+  chn_attr.stIspOpt.stMaxSize.u32Width = (RK_U32)config->video.max_width;
+  chn_attr.stIspOpt.stMaxSize.u32Height = (RK_U32)config->video.max_height;
 
   ret = RK_MPI_VI_SetChnAttr(0, config->video.vi_channel, &chn_attr);
   if (ret != RK_SUCCESS) {
@@ -120,10 +120,12 @@ static void fill_h265_rc(VENC_CHN_ATTR_S *attr, const IPC_LITE_CONFIG *config) {
 
 static int venc_init(const IPC_LITE_CONFIG *config) {
   VENC_CHN_ATTR_S attr;
+  VENC_CHN_REF_BUF_SHARE_S ref_buf_attr;
   VENC_RECV_PIC_PARAM_S recv_param;
   int ret = 0;
 
   memset(&attr, 0, sizeof(attr));
+  memset(&ref_buf_attr, 0, sizeof(ref_buf_attr));
   memset(&recv_param, 0, sizeof(recv_param));
 
   if (config->video.codec == IPC_LITE_CODEC_H264) {
@@ -136,24 +138,32 @@ static int venc_init(const IPC_LITE_CONFIG *config) {
     attr.stVencAttr.u32Profile = H265E_PROFILE_MAIN;
   }
 
-  attr.stVencAttr.u32MaxPicWidth = (RK_U32)config->video.width;
-  attr.stVencAttr.u32MaxPicHeight = (RK_U32)config->video.height;
+  attr.stVencAttr.u32MaxPicWidth = (RK_U32)config->video.max_width;
+  attr.stVencAttr.u32MaxPicHeight = (RK_U32)config->video.max_height;
   attr.stVencAttr.enPixelFormat = RK_FMT_YUV420SP;
   attr.stVencAttr.enMirror = MIRROR_NONE;
-  attr.stVencAttr.u32BufSize =
-      (RK_U32)(config->video.width * config->video.height * 3 / 2);
+  attr.stVencAttr.u32BufSize = (RK_U32)config->video.venc_buffer_size;
   attr.stVencAttr.bByFrame = RK_TRUE;
   attr.stVencAttr.u32PicWidth = (RK_U32)config->video.width;
   attr.stVencAttr.u32PicHeight = (RK_U32)config->video.height;
   attr.stVencAttr.u32VirWidth = IPC_LITE_ALIGN((RK_U32)config->video.width, 16);
   attr.stVencAttr.u32VirHeight =
       IPC_LITE_ALIGN((RK_U32)config->video.height, 16);
-  attr.stVencAttr.u32StreamBufCnt = 4;
+  attr.stVencAttr.u32StreamBufCnt = (RK_U32)config->video.venc_buffer_count;
 
   ret = RK_MPI_VENC_CreateChn(config->video.venc_channel, &attr);
   if (ret != RK_SUCCESS) {
     IPC_LITE_LOGE("pipeline", "RK_MPI_VENC_CreateChn failed %#x", ret);
     return -1;
+  }
+
+  ref_buf_attr.bEnable = config->video.enable_refer_buffer_share ? RK_TRUE
+                                                                  : RK_FALSE;
+  ret = RK_MPI_VENC_SetChnRefBufShareAttr(config->video.venc_channel,
+                                          &ref_buf_attr);
+  if (ret != RK_SUCCESS) {
+    IPC_LITE_LOGW("pipeline",
+                  "RK_MPI_VENC_SetChnRefBufShareAttr failed %#x", ret);
   }
 
   recv_param.s32RecvPicNum = -1;
@@ -188,7 +198,7 @@ static void *stream_thread_main(void *arg) {
       size_t i = 0;
 
       memset(&packet, 0, sizeof(packet));
-      packet.data = base + stream.pstPack->u32Offset;
+      packet.data = base;
       packet.len = stream.pstPack->u32Len;
       packet.pts = stream.pstPack->u64PTS;
       packet.key_frame =

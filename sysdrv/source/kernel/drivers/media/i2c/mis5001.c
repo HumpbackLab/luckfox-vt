@@ -952,11 +952,15 @@ static int __mis5001_start_stream(struct mis5001 *mis5001)
 {
 	int ret;
 
-	ret = mis5001_write_array(mis5001->client, mis5001->cur_mode->reg_list);
-	if (ret)
-		return ret;
-
-	/* In case these controls are set before streaming */
+	/*
+	 * Program the full mode register table during s_power(), before the CSI
+	 * receiver starts consuming data. That avoids transient invalid MIPI
+	 * output at stream-on, which otherwise shows up on RV1103/RV1106 as
+	 * fs/fe mismatch, csi size err and PIC_SIZE_ERROR.
+	 *
+	 * Stream-on only restores runtime controls and flips the sensor from
+	 * standby to streaming.
+	 */
 	ret = __v4l2_ctrl_handler_setup(&mis5001->ctrl_handler);
 	if (ret)
 		return ret;
@@ -1030,6 +1034,23 @@ static int mis5001_s_power(struct v4l2_subdev *sd, int on)
 		ret = mis5001_write_array(mis5001->client, mis5001_global_regs);
 		if (ret) {
 			v4l2_err(sd, "could not set init registers\n");
+			pm_runtime_put_noidle(&client->dev);
+			goto unlock_and_return;
+		}
+
+		ret = mis5001_write_array(mis5001->client,
+					  mis5001->cur_mode->reg_list);
+		if (ret) {
+			v4l2_err(sd, "could not set mode registers\n");
+			pm_runtime_put_noidle(&client->dev);
+			goto unlock_and_return;
+		}
+
+		ret = mis5001_write_reg(mis5001->client, MIS5001_REG_CTRL_MODE,
+					MIS5001_REG_VALUE_08BIT,
+					MIS5001_MODE_SW_STANDBY);
+		if (ret) {
+			v4l2_err(sd, "could not enter standby after power-on init\n");
 			pm_runtime_put_noidle(&client->dev);
 			goto unlock_and_return;
 		}

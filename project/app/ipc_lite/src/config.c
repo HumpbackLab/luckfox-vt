@@ -117,19 +117,25 @@ void ipc_lite_config_set_defaults(IPC_LITE_CONFIG *config) {
   set_string(config->isp.iq_dir, sizeof(config->isp.iq_dir),
              "/oem/usr/share/iqfiles");
 
-  config->video.width = 1280;
-  config->video.height = 720;
+  config->video.width = 704;
+  config->video.height = 576;
+  config->video.max_width = 704;
+  config->video.max_height = 576;
   config->video.fps = 25;
   config->video.gop = 50;
-  config->video.bitrate_kbps = 2048;
-  config->video.codec = IPC_LITE_CODEC_H264;
-  config->video.vi_channel = 0;
-  config->video.venc_channel = 0;
+  config->video.bitrate_kbps = 512;
+  config->video.codec = IPC_LITE_CODEC_H265;
+  config->video.vi_channel = 1;
+  config->video.venc_channel = 1;
+  config->video.input_buffer_count = 2;
+  config->video.venc_buffer_count = 4;
+  config->video.venc_buffer_size = 202752;
+  config->video.enable_refer_buffer_share = true;
   config->video.venc_timeout_ms = 1000;
 
   config->file_output.enable = true;
   set_string(config->file_output.path, sizeof(config->file_output.path),
-             "/tmp/ipc_lite.h264");
+             "/tmp/ipc_lite.h265");
 
   config->rtsp.enable = false;
   config->rtsp.port = 554;
@@ -185,6 +191,12 @@ static int apply_value(IPC_LITE_CONFIG *config, const char *section,
     if (!strcmp(key, "height")) {
       return parse_int(value, &config->video.height);
     }
+    if (!strcmp(key, "max_width")) {
+      return parse_int(value, &config->video.max_width);
+    }
+    if (!strcmp(key, "max_height")) {
+      return parse_int(value, &config->video.max_height);
+    }
     if (!strcmp(key, "fps")) {
       return parse_int(value, &config->video.fps);
     }
@@ -202,6 +214,22 @@ static int apply_value(IPC_LITE_CONFIG *config, const char *section,
     }
     if (!strcmp(key, "venc_channel")) {
       return parse_int(value, &config->video.venc_channel);
+    }
+    if (!strcmp(key, "input_buffer_count")) {
+      return parse_int(value, &config->video.input_buffer_count);
+    }
+    if (!strcmp(key, "venc_buffer_count")) {
+      return parse_int(value, &config->video.venc_buffer_count);
+    }
+    if (!strcmp(key, "venc_buffer_size")) {
+      return parse_int(value, &config->video.venc_buffer_size);
+    }
+    if (!strcmp(key, "enable_refer_buffer_share")) {
+      if (parse_bool(value, &bool_value)) {
+        return -1;
+      }
+      config->video.enable_refer_buffer_share = bool_value;
+      return 0;
     }
     if (!strcmp(key, "venc_timeout_ms")) {
       return parse_int(value, &config->video.venc_timeout_ms);
@@ -269,8 +297,18 @@ static int apply_value(IPC_LITE_CONFIG *config, const char *section,
 
 static int validate(const IPC_LITE_CONFIG *config) {
   if (config->video.width <= 0 || config->video.height <= 0 ||
+      config->video.max_width <= 0 || config->video.max_height <= 0 ||
       config->video.fps <= 0 || config->video.gop <= 0 ||
-      config->video.bitrate_kbps <= 0 || config->video.venc_timeout_ms <= 0) {
+      config->video.bitrate_kbps <= 0 ||
+      config->video.input_buffer_count <= 0 ||
+      config->video.venc_buffer_count <= 0 ||
+      config->video.venc_buffer_size <= 0 ||
+      config->video.venc_timeout_ms <= 0) {
+    return -1;
+  }
+
+  if (config->video.width > config->video.max_width ||
+      config->video.height > config->video.max_height) {
     return -1;
   }
 

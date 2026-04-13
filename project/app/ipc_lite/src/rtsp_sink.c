@@ -2,6 +2,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "log.h"
 #include "rtsp_demo.h"
@@ -9,6 +10,8 @@
 typedef struct {
   rtsp_demo_handle demo;
   rtsp_session_handle session;
+  time_t last_error_log_at;
+  unsigned int error_count;
 } IPC_LITE_RTSP_SINK_CONTEXT;
 
 static int rtsp_sink_open(IPC_LITE_STREAM_SINK *sink,
@@ -63,17 +66,30 @@ static int rtsp_sink_open(IPC_LITE_STREAM_SINK *sink,
 static int rtsp_sink_write(IPC_LITE_STREAM_SINK *sink,
                            const IPC_LITE_STREAM_PACKET *packet) {
   IPC_LITE_RTSP_SINK_CONTEXT *context = sink->ctx;
+  int ret = 0;
 
   if (!sink->enabled || !context) {
     return 0;
   }
 
-  if (rtsp_tx_video(context->session, packet->data, (int)packet->len,
-                    packet->pts) != 0) {
-    return -1;
+  rtsp_do_event(context->demo);
+  ret = rtsp_tx_video(context->session, packet->data, (int)packet->len,
+                      packet->pts);
+  rtsp_do_event(context->demo);
+  if (ret != 0) {
+    time_t now = time(NULL);
+
+    context->error_count++;
+    if (context->last_error_log_at == 0 ||
+        difftime(now, context->last_error_log_at) >= 5.0) {
+      IPC_LITE_LOGW("rtsp_sink",
+                    "rtsp_tx_video returned %d, stream may have no active "
+                    "client yet (failures=%u)",
+                    ret, context->error_count);
+      context->last_error_log_at = now;
+    }
   }
 
-  rtsp_do_event(context->demo);
   return 0;
 }
 
@@ -103,4 +119,3 @@ void ipc_lite_rtsp_sink_init(IPC_LITE_STREAM_SINK *sink) {
   sink->write = rtsp_sink_write;
   sink->close = rtsp_sink_close;
 }
-
