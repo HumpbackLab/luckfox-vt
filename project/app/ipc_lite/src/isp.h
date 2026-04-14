@@ -7,8 +7,10 @@
 
 #ifdef RV1126_RV1109
 #include <rk_aiq_user_api_sysctl.h>
+#include <rk_aiq_user_api_ae.h>
 #else
 #include <rk_aiq_user_api2_sysctl.h>
+#include <rk_aiq_user_api2_ae.h>
 #endif
 
 typedef struct {
@@ -22,4 +24,3 @@ int ipc_lite_isp_start(IPC_LITE_ISP_CONTEXT *context,
 void ipc_lite_isp_stop(IPC_LITE_ISP_CONTEXT *context);
 
 #endif
-

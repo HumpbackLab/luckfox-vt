@@ -53,6 +53,9 @@ target_link_libraries(ipc_lite
 )
 
 install(TARGETS ipc_lite DESTINATION ipc_lite)
-install(FILES ipc_lite.ini DESTINATION ipc_lite)
+install(FILES
+  ipc_lite.ini
+  ipc_lite.720p.lowlat.rtsp.ini
+  DESTINATION ipc_lite
+)
 install(PROGRAMS run.sh DESTINATION ipc_lite)
-

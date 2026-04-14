@@ -96,6 +96,25 @@ static int vi_chn_init(const IPC_LITE_CONFIG *config) {
   return 0;
 }
 
+static RK_U32 effective_venc_buffer_size(const IPC_LITE_CONFIG *config) {
+  const RK_U32 configured = (RK_U32)config->video.venc_buffer_size;
+  const RK_U32 conservative_min =
+      ((RK_U32)config->video.width * (RK_U32)config->video.height * 3U) / 2U;
+  const RK_U32 baseline_pixels = 704U * 576U;
+  const RK_U32 current_pixels =
+      (RK_U32)config->video.width * (RK_U32)config->video.height;
+
+  if (current_pixels > baseline_pixels && configured < conservative_min) {
+    IPC_LITE_LOGW("pipeline",
+                  "venc_buffer_size=%u too small for %dx%d, bump to %u",
+                  configured, config->video.width, config->video.height,
+                  conservative_min);
+    return conservative_min;
+  }
+
+  return configured;
+}
+
 static void apply_h264_defaults(int venc_channel) {
   static const RK_U32 thrd_i[16] = {0, 0, 0, 0, 3, 3, 5, 5,
                                     8, 8, 8, 15, 15, 20, 25, 25};
@@ -304,10 +323,114 @@ static void fill_h265_rc(VENC_CHN_ATTR_S *attr, const IPC_LITE_CONFIG *config) {
   attr->stRcAttr.stH265Cbr.u32StatTime = 1;
 }
 
+static void apply_scene_mode(const IPC_LITE_CONFIG *config) {
+  int ret = 0;
+
+  if (config->video.scene_mode == IPC_LITE_SCENE_MODE_DISABLED) {
+    return;
+  }
+
+  ret = RK_MPI_VENC_SetSceneMode(
+      config->video.venc_channel, (VENC_SCENE_MODE_E)config->video.scene_mode);
+  if (ret != RK_SUCCESS) {
+    IPC_LITE_LOGW("pipeline", "RK_MPI_VENC_SetSceneMode failed %#x", ret);
+    return;
+  }
+
+  IPC_LITE_LOGI("pipeline", "scene mode set to %d", config->video.scene_mode);
+}
+
+static void apply_channel_params(const IPC_LITE_CONFIG *config) {
+  VENC_CHN_PARAM_S chn_param;
+  int ret = 0;
+
+  if (config->video.max_stream_count <= 0 &&
+      config->video.poll_wakeup_frame_count <= 0) {
+    return;
+  }
+
+  memset(&chn_param, 0, sizeof(chn_param));
+  ret = RK_MPI_VENC_GetChnParam(config->video.venc_channel, &chn_param);
+  if (ret != RK_SUCCESS) {
+    IPC_LITE_LOGW("pipeline", "RK_MPI_VENC_GetChnParam failed %#x", ret);
+    return;
+  }
+
+  if (config->video.max_stream_count > 0) {
+    chn_param.u32MaxStrmCnt = (RK_U32)config->video.max_stream_count;
+  }
+  if (config->video.poll_wakeup_frame_count > 0) {
+    chn_param.u32PollWakeUpFrmCnt =
+        (RK_U32)config->video.poll_wakeup_frame_count;
+  }
+
+  ret = RK_MPI_VENC_SetChnParam(config->video.venc_channel, &chn_param);
+  if (ret != RK_SUCCESS) {
+    IPC_LITE_LOGW("pipeline", "RK_MPI_VENC_SetChnParam failed %#x", ret);
+    return;
+  }
+
+  IPC_LITE_LOGI("pipeline", "stream param max_cnt=%u wakeup=%u",
+                chn_param.u32MaxStrmCnt, chn_param.u32PollWakeUpFrmCnt);
+}
+
+static void apply_motion_tuning(const IPC_LITE_CONFIG *config) {
+  int ret = 0;
+
+  if (config->video.enable_motion_deblur) {
+    ret = RK_MPI_VENC_EnableMotionDeblur(config->video.venc_channel, RK_TRUE);
+    if (ret != RK_SUCCESS) {
+      IPC_LITE_LOGW("pipeline",
+                    "RK_MPI_VENC_EnableMotionDeblur failed %#x", ret);
+    } else {
+      ret = RK_MPI_VENC_SetMotionDeblurStrength(
+          config->video.venc_channel,
+          (RK_U32)config->video.motion_deblur_strength);
+      if (ret != RK_SUCCESS) {
+        IPC_LITE_LOGW("pipeline",
+                      "RK_MPI_VENC_SetMotionDeblurStrength failed %#x", ret);
+      }
+    }
+  }
+
+  if (config->video.enable_motion_static_switch) {
+    ret = RK_MPI_VENC_EnableMotionStaticSwitch(config->video.venc_channel,
+                                               RK_TRUE);
+    if (ret != RK_SUCCESS) {
+      IPC_LITE_LOGW("pipeline",
+                    "RK_MPI_VENC_EnableMotionStaticSwitch failed %#x", ret);
+    }
+  }
+}
+
+static void apply_slice_split(const IPC_LITE_CONFIG *config) {
+  VENC_SLICE_SPLIT_S slice_split;
+  int ret = 0;
+
+  if (!config->video.enable_slice_split || config->video.slice_split_size <= 0) {
+    return;
+  }
+
+  memset(&slice_split, 0, sizeof(slice_split));
+  slice_split.bSplitEnable = RK_TRUE;
+  slice_split.u32SplitMode = (RK_U32)config->video.slice_split_mode;
+  slice_split.u32SplitSize = (RK_U32)config->video.slice_split_size;
+
+  ret = RK_MPI_VENC_SetSliceSplit(config->video.venc_channel, &slice_split);
+  if (ret != RK_SUCCESS) {
+    IPC_LITE_LOGW("pipeline", "RK_MPI_VENC_SetSliceSplit failed %#x", ret);
+    return;
+  }
+
+  IPC_LITE_LOGI("pipeline", "slice split enabled mode=%u size=%u",
+                slice_split.u32SplitMode, slice_split.u32SplitSize);
+}
+
 static int venc_init(const IPC_LITE_CONFIG *config) {
   VENC_CHN_ATTR_S attr;
   VENC_CHN_REF_BUF_SHARE_S ref_buf_attr;
   VENC_RECV_PIC_PARAM_S recv_param;
+  RK_U32 venc_buffer_size = 0;
   int ret = 0;
 
   memset(&attr, 0, sizeof(attr));
@@ -328,7 +451,8 @@ static int venc_init(const IPC_LITE_CONFIG *config) {
   attr.stVencAttr.u32MaxPicHeight = (RK_U32)config->video.max_height;
   attr.stVencAttr.enPixelFormat = RK_FMT_YUV420SP;
   attr.stVencAttr.enMirror = MIRROR_NONE;
-  attr.stVencAttr.u32BufSize = (RK_U32)config->video.venc_buffer_size;
+  venc_buffer_size = effective_venc_buffer_size(config);
+  attr.stVencAttr.u32BufSize = venc_buffer_size;
   attr.stVencAttr.bByFrame = RK_TRUE;
   attr.stVencAttr.u32PicWidth = (RK_U32)config->video.width;
   attr.stVencAttr.u32PicHeight = (RK_U32)config->video.height;
@@ -350,6 +474,11 @@ static int venc_init(const IPC_LITE_CONFIG *config) {
   } else {
     apply_h265_defaults(config->video.venc_channel);
   }
+
+  apply_scene_mode(config);
+  apply_channel_params(config);
+  apply_motion_tuning(config);
+  apply_slice_split(config);
 
   ref_buf_attr.bEnable = config->video.enable_refer_buffer_share ? RK_TRUE
                                                                   : RK_FALSE;
@@ -524,6 +653,25 @@ int ipc_lite_pipeline_open_disabled_sinks(IPC_LITE_MPI_PIPELINE *pipeline,
     }
   }
 
+  return 0;
+}
+
+int ipc_lite_pipeline_request_idr(IPC_LITE_MPI_PIPELINE *pipeline,
+                                  bool instant) {
+  int ret = 0;
+
+  if (!pipeline || !pipeline->config || !pipeline->venc_enabled) {
+    return -1;
+  }
+
+  ret = RK_MPI_VENC_RequestIDR(pipeline->config->video.venc_channel,
+                               instant ? RK_TRUE : RK_FALSE);
+  if (ret != RK_SUCCESS) {
+    IPC_LITE_LOGW("pipeline", "RK_MPI_VENC_RequestIDR failed %#x", ret);
+    return -1;
+  }
+
+  IPC_LITE_LOGI("pipeline", "requested IDR (instant=%d)", instant ? 1 : 0);
   return 0;
 }
 

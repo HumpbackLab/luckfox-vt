@@ -100,6 +100,45 @@ static int parse_codec(const char *value, IPC_LITE_CODEC *codec) {
   return -1;
 }
 
+static int parse_scene_mode(const char *value, IPC_LITE_SCENE_MODE *mode) {
+  int numeric = 0;
+
+  if (!parse_int(value, &numeric) &&
+      numeric >= IPC_LITE_SCENE_MODE_DISABLED &&
+      numeric <= IPC_LITE_SCENE_MODE_PTZ) {
+    *mode = (IPC_LITE_SCENE_MODE)numeric;
+    return 0;
+  }
+
+  if (!strcasecmp(value, "off") || !strcasecmp(value, "disable") ||
+      !strcasecmp(value, "disabled") || !strcasecmp(value, "none")) {
+    *mode = IPC_LITE_SCENE_MODE_DISABLED;
+    return 0;
+  }
+
+  if (!strcasecmp(value, "ipc")) {
+    *mode = IPC_LITE_SCENE_MODE_IPC;
+    return 0;
+  }
+
+  if (!strcasecmp(value, "motion")) {
+    *mode = IPC_LITE_SCENE_MODE_MOTION;
+    return 0;
+  }
+
+  if (!strcasecmp(value, "cvr")) {
+    *mode = IPC_LITE_SCENE_MODE_CVR;
+    return 0;
+  }
+
+  if (!strcasecmp(value, "ptz")) {
+    *mode = IPC_LITE_SCENE_MODE_PTZ;
+    return 0;
+  }
+
+  return -1;
+}
+
 static void set_string(char *dst, size_t dst_size, const char *src) {
   snprintf(dst, dst_size, "%s", src);
 }
@@ -132,6 +171,18 @@ void ipc_lite_config_set_defaults(IPC_LITE_CONFIG *config) {
   config->video.venc_buffer_size = 202752;
   config->video.enable_refer_buffer_share = true;
   config->video.venc_timeout_ms = 1000;
+  config->video.sync_sensor_fps = true;
+  config->video.scene_mode = IPC_LITE_SCENE_MODE_CVR;
+  config->video.enable_motion_deblur = false;
+  config->video.motion_deblur_strength = 3;
+  config->video.enable_motion_static_switch = false;
+  config->video.enable_slice_split = false;
+  config->video.slice_split_mode = 0;
+  config->video.slice_split_size = 0;
+  config->video.max_stream_count = 1;
+  config->video.poll_wakeup_frame_count = 1;
+  config->video.request_idr_on_start = true;
+  config->video.request_idr_on_rtsp_enable = true;
 
   config->file_output.enable = true;
   set_string(config->file_output.path, sizeof(config->file_output.path),
@@ -234,6 +285,66 @@ static int apply_value(IPC_LITE_CONFIG *config, const char *section,
     if (!strcmp(key, "venc_timeout_ms")) {
       return parse_int(value, &config->video.venc_timeout_ms);
     }
+    if (!strcmp(key, "sync_sensor_fps")) {
+      if (parse_bool(value, &bool_value)) {
+        return -1;
+      }
+      config->video.sync_sensor_fps = bool_value;
+      return 0;
+    }
+    if (!strcmp(key, "scene_mode")) {
+      return parse_scene_mode(value, &config->video.scene_mode);
+    }
+    if (!strcmp(key, "enable_motion_deblur")) {
+      if (parse_bool(value, &bool_value)) {
+        return -1;
+      }
+      config->video.enable_motion_deblur = bool_value;
+      return 0;
+    }
+    if (!strcmp(key, "motion_deblur_strength")) {
+      return parse_int(value, &config->video.motion_deblur_strength);
+    }
+    if (!strcmp(key, "enable_motion_static_switch")) {
+      if (parse_bool(value, &bool_value)) {
+        return -1;
+      }
+      config->video.enable_motion_static_switch = bool_value;
+      return 0;
+    }
+    if (!strcmp(key, "enable_slice_split")) {
+      if (parse_bool(value, &bool_value)) {
+        return -1;
+      }
+      config->video.enable_slice_split = bool_value;
+      return 0;
+    }
+    if (!strcmp(key, "slice_split_mode")) {
+      return parse_int(value, &config->video.slice_split_mode);
+    }
+    if (!strcmp(key, "slice_split_size")) {
+      return parse_int(value, &config->video.slice_split_size);
+    }
+    if (!strcmp(key, "max_stream_count")) {
+      return parse_int(value, &config->video.max_stream_count);
+    }
+    if (!strcmp(key, "poll_wakeup_frame_count")) {
+      return parse_int(value, &config->video.poll_wakeup_frame_count);
+    }
+    if (!strcmp(key, "request_idr_on_start")) {
+      if (parse_bool(value, &bool_value)) {
+        return -1;
+      }
+      config->video.request_idr_on_start = bool_value;
+      return 0;
+    }
+    if (!strcmp(key, "request_idr_on_rtsp_enable")) {
+      if (parse_bool(value, &bool_value)) {
+        return -1;
+      }
+      config->video.request_idr_on_rtsp_enable = bool_value;
+      return 0;
+    }
   } else if (!strcmp(section, "output.file")) {
     if (!strcmp(key, "enable")) {
       if (parse_bool(value, &bool_value)) {
@@ -304,6 +415,14 @@ static int validate(const IPC_LITE_CONFIG *config) {
       config->video.venc_buffer_count <= 0 ||
       config->video.venc_buffer_size <= 0 ||
       config->video.venc_timeout_ms <= 0) {
+    return -1;
+  }
+
+  if (config->video.motion_deblur_strength < 0 ||
+      config->video.slice_split_mode < 0 ||
+      config->video.slice_split_size < 0 ||
+      config->video.max_stream_count < 0 ||
+      config->video.poll_wakeup_frame_count < 0) {
     return -1;
   }
 

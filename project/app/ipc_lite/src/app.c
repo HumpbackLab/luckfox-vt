@@ -97,14 +97,29 @@ static void log_config_summary(const IPC_LITE_CONFIG *config) {
                 config->video.venc_channel);
   IPC_LITE_LOGI("app",
                 "aiq=%s iq_dir=%s in_buf=%d venc_buf=%d/%d ref_share=%s "
-                "rtsp=%s file=%s",
+                "sensor_fps=%s scene=%d rtsp=%s file=%s",
                 config->isp.enable_aiq ? "on" : "off", config->isp.iq_dir,
                 config->video.input_buffer_count,
                 config->video.venc_buffer_count,
                 config->video.venc_buffer_size,
                 config->video.enable_refer_buffer_share ? "on" : "off",
+                config->video.sync_sensor_fps ? "sync" : "keep",
+                config->video.scene_mode,
                 config->rtsp.enable ? "on" : "off",
                 config->file_output.enable ? config->file_output.path : "off");
+  IPC_LITE_LOGI("app",
+                "idr_start=%s idr_rtsp=%s motion_deblur=%s(%d) "
+                "motion_static=%s slice=%s/%d/%d wakeup=%d max_stream=%d",
+                config->video.request_idr_on_start ? "on" : "off",
+                config->video.request_idr_on_rtsp_enable ? "on" : "off",
+                config->video.enable_motion_deblur ? "on" : "off",
+                config->video.motion_deblur_strength,
+                config->video.enable_motion_static_switch ? "on" : "off",
+                config->video.enable_slice_split ? "on" : "off",
+                config->video.slice_split_mode,
+                config->video.slice_split_size,
+                config->video.poll_wakeup_frame_count,
+                config->video.max_stream_count);
 }
 
 static void log_periodic_stats(const IPC_LITE_CONFIG *config,
@@ -193,6 +208,9 @@ static int start_stream_stack(const IPC_LITE_CONFIG *config,
   }
 
   reset_periodic_stats(pipeline, periodic_stats, last_log_at);
+  if (config->video.request_idr_on_start) {
+    ipc_lite_pipeline_request_idr(pipeline, false);
+  }
   return 0;
 }
 
@@ -309,6 +327,9 @@ int ipc_lite_run(const char *config_path) {
           if (ipc_lite_pipeline_open_disabled_sinks(&pipeline,
                                                     &active_config) != 0) {
             goto cleanup;
+          }
+          if (config.video.request_idr_on_rtsp_enable) {
+            ipc_lite_pipeline_request_idr(&pipeline, false);
           }
         }
         commit_periodic_stats(&periodic_stats, &stats_sample);

@@ -16,6 +16,36 @@ static XCamReturn isp_err_callback(rk_aiq_err_msg_t *msg) {
   return XCAM_RETURN_NO_ERROR;
 }
 
+static void sync_sensor_frame_rate(IPC_LITE_ISP_CONTEXT *context,
+                                   const IPC_LITE_CONFIG *config) {
+  Uapi_ExpSwAttrV2_t exp_sw_attr;
+  int ret = 0;
+
+  if (!config->video.sync_sensor_fps || config->video.fps <= 0 ||
+      !context->aiq_ctx) {
+    return;
+  }
+
+  memset(&exp_sw_attr, 0, sizeof(exp_sw_attr));
+  ret = rk_aiq_user_api2_ae_getExpSwAttr(context->aiq_ctx, &exp_sw_attr);
+  if (ret != 0) {
+    IPC_LITE_LOGW("isp", "rk_aiq_user_api2_ae_getExpSwAttr failed %d", ret);
+    return;
+  }
+
+  exp_sw_attr.stAuto.stFrmRate.isFpsFix = true;
+  exp_sw_attr.stAuto.stFrmRate.FpsValue = (float)config->video.fps;
+  ret = rk_aiq_user_api2_ae_setExpSwAttr(context->aiq_ctx, exp_sw_attr);
+  if (ret != 0) {
+    IPC_LITE_LOGW("isp",
+                  "rk_aiq_user_api2_ae_setExpSwAttr failed %d for fps=%d",
+                  ret, config->video.fps);
+    return;
+  }
+
+  IPC_LITE_LOGI("isp", "sensor fps fixed to %d", config->video.fps);
+}
+
 int ipc_lite_isp_start(IPC_LITE_ISP_CONTEXT *context,
                        const IPC_LITE_CONFIG *config) {
   rk_aiq_static_info_t static_info;
@@ -70,6 +100,7 @@ int ipc_lite_isp_start(IPC_LITE_ISP_CONTEXT *context,
   }
 
   context->enabled = true;
+  sync_sensor_frame_rate(context, config);
   IPC_LITE_LOGI("isp", "aiq started");
   return 0;
 }

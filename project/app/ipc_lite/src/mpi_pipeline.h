@@ -43,6 +43,8 @@ int ipc_lite_pipeline_start(IPC_LITE_MPI_PIPELINE *pipeline,
                             IPC_LITE_STREAM_SINK *sinks, size_t sink_count);
 int ipc_lite_pipeline_open_disabled_sinks(IPC_LITE_MPI_PIPELINE *pipeline,
                                           const IPC_LITE_CONFIG *config);
+int ipc_lite_pipeline_request_idr(IPC_LITE_MPI_PIPELINE *pipeline,
+                                  bool instant);
 void ipc_lite_pipeline_request_stop(IPC_LITE_MPI_PIPELINE *pipeline);
 void ipc_lite_pipeline_stop(IPC_LITE_MPI_PIPELINE *pipeline);
 void ipc_lite_pipeline_get_stats(IPC_LITE_MPI_PIPELINE *pipeline,

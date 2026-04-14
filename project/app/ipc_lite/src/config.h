@@ -19,6 +19,14 @@ typedef enum {
   IPC_LITE_CODEC_H265 = 1,
 } IPC_LITE_CODEC;
 
+typedef enum {
+  IPC_LITE_SCENE_MODE_DISABLED = -1,
+  IPC_LITE_SCENE_MODE_IPC = 0,
+  IPC_LITE_SCENE_MODE_MOTION = 1,
+  IPC_LITE_SCENE_MODE_CVR = 2,
+  IPC_LITE_SCENE_MODE_PTZ = 3,
+} IPC_LITE_SCENE_MODE;
+
 typedef struct {
   char name[IPC_LITE_NAME_MAX];
   IPC_LITE_LOG_LEVEL log_level;
@@ -48,6 +56,18 @@ typedef struct {
   int venc_buffer_size;
   bool enable_refer_buffer_share;
   int venc_timeout_ms;
+  bool sync_sensor_fps;
+  IPC_LITE_SCENE_MODE scene_mode;
+  bool enable_motion_deblur;
+  int motion_deblur_strength;
+  bool enable_motion_static_switch;
+  bool enable_slice_split;
+  int slice_split_mode;
+  int slice_split_size;
+  int max_stream_count;
+  int poll_wakeup_frame_count;
+  bool request_idr_on_start;
+  bool request_idr_on_rtsp_enable;
 } IPC_LITE_VIDEO_SECTION;
 
 typedef struct {
