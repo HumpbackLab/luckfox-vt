@@ -512,3 +512,83 @@ IPC_LITE_CONFIG=./ipc_lite.720p.lowlat.rtsp.ini ./run.sh
 一句话总结本轮进展：
 
 - `ipc_lite` 已经从“704x576 保守可用”推进到“720p25 可稳定 RTSP 拉流”，而不是还停留在 720p 无法落地的阶段
+
+## 16. 驱动层新结论：高帧率瓶颈很可能不在 `ipc_lite`
+
+继续往下核对 `mis5001` 驱动后，得到一个比 `rkipc` 更关键的发现：
+
+- [`sysdrv/source/kernel/drivers/media/i2c/mis5001.c`](/work/luckfox-pico/sysdrv/source/kernel/drivers/media/i2c/mis5001.c) 当前只注册了一个 `supported_modes[]`
+- 这个 mode 是：
+  - `2592x1944`
+  - `2 lane`
+  - `RAW10`
+- 没有任何原生 `1920x1080` 或 `1280x720` mode
+
+这意味着当前我们在应用层跑的：
+
+- `1280x720`
+- `rkisp_selfpath`
+
+更大概率是：
+
+- sensor 仍输出全分辨率
+- ISP / VI 再把它缩到 `720p`
+
+因此：
+
+- 单纯继续在 `ipc_lite` 里把 `video.fps` 改成 `30`
+- 或继续照搬 `rkipc` 的编码参数
+
+都不太可能从根本上把帧率抬上去。
+
+### 16.1 一个需要特别警惕的细节
+
+当前 `mis5001.c` 里还有一个可疑点：
+
+- mode 注释写的是：
+  - `Linear 25Fps`
+- 但 `supported_modes[]` 里的 `max_fps` 却填成：
+  - `.numerator = 10000`
+  - `.denominator = 300000`
+  - 即按驱动表达更接近 `30 fps`
+
+这说明至少存在两种可能：
+
+1. 注释过期，真实寄存器表已经按 `30 fps` 时序在跑
+2. 寄存器表仍更接近 `25 fps`，但驱动却把 mode 上限按 `30 fps` 暴露给了上层
+
+如果是第 2 种情况，就很容易出现我们当前看到的现象：
+
+- 上层配置与日志都显示 `30 fps`
+- 实际输出却长期卡在 `21 ~ 23 fps`
+- 并伴随 `fs/fe mis`、`csi size err`、`PIC_SIZE_ERROR`
+
+### 16.2 后续推进顺序需要调整
+
+基于这个新发现，后续工作建议拆成两条线：
+
+#### A. 用户态继续做，但目标变成“排除编码器瓶颈”
+
+- 给 `ipc_lite` 增加更多编码器调优入口
+- 用更轻的 `profile / rc / qp / anti_ring / anti_line` 组合测试
+- 如果这样做后 `720p25` 还能继续明显提升，说明编码器端还有余量
+
+#### B. 真正要冲高帧率，优先转向 `mis5001` 驱动
+
+重点不再是：
+
+- 再换一组 `VENC` 参数
+
+而是：
+
+1. 明确 `mis5001` 当前寄存器表到底对应 `25 fps` 还是 `30 fps`
+2. 校正 `supported_modes[]` 的 `max_fps` 声明，避免上层被错误能力误导
+3. 如果 sensor 支持更低分辨率高帧率模式：
+   - 给驱动新增原生 `1920x1080` / `1280x720` mode
+4. 让上层真正选择 sensor 原生 mode，而不是继续走“全分辨率进 ISP 再缩小”的路径
+
+更直接地说：
+
+- `ipc_lite` 还能继续优化
+- 但“高帧率”这件事现在已经不能只当作应用层问题处理
+- 如果目标是 `720p30` 甚至更高，`mis5001` 驱动和 sensor mode 基本已经进入关键路径
