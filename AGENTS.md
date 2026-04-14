@@ -18,6 +18,7 @@ Use it as the default operational baseline unless the user explicitly overrides 
 
 - Username: `root`
 - Password: `luckfox`
+- Current board IP: `192.168.137.154`
 
 ## Access Priority
 
@@ -56,8 +57,8 @@ Use serial when:
 When deploying `ipc_lite`, prefer:
 
 ```sh
-scp project/app/ipc_lite/out/ipc_lite/{ipc_lite,ipc_lite.ini,run.sh} root@<board-ip>:/root/ipc_lite/
-ssh root@<board-ip> 'cd /root/ipc_lite && chmod +x ipc_lite run.sh && ./run.sh'
+scp project/app/ipc_lite/out/ipc_lite/{ipc_lite,ipc_lite.ini,run.sh} root@192.168.137.154:/root/ipc_lite/
+ssh root@192.168.137.154 'cd /root/ipc_lite && chmod +x ipc_lite run.sh && ./run.sh'
 ```
 
 Only fall back to serial upload if network transfer is not possible.
@@ -77,11 +78,20 @@ cd /root/ipc_lite
 ## Media Debugging Notes
 
 - Treat `704x576 + selfpath + H.265` as the current conservative baseline.
-- Do not assume `1280x720` is stable on this board.
+- Treat `1280x720 + selfpath + H.264 + 25fps` as the current exploratory low-latency baseline when `RTSP` validation is needed.
+- Do not assume `1280x720 + 30fps` is stable on this board.
+- Current `720p selfpath` is not a native `MIS5001` sensor mode:
+  - the sensor still comes up as `2592x1944`
+  - `720p` is currently produced downstream by ISP/VI scaling or cropping
+- If the goal is higher frame rate such as `60fps` or `120fps`, do not treat it as an `ipc_lite`-only tuning problem.
+  - The critical path is likely `MIS5001` native sensor mode support plus matching `IQ` / ISP tuning.
 - Existing low-level issues such as `csi size err`, `PIC_SIZE_ERROR`, and frame loss may come from the sensor/CSI path, not only from `ipc_lite`.
 
 ## Practical Rules
 
 - Before using serial, make sure no stale `miniterm`, `monitor.sh`, or old `ssh/scp` sessions are still holding resources.
 - Before starting a new media test, ensure no stale `ipc_lite` process is still running on the board.
+- When testing `720p` or higher, prefer `vi_channel = 1` (`rkisp_selfpath`) unless there is a specific reason to revisit `mainpath`.
+- Keep `file = off` during RTSP and performance validation unless a short local capture is explicitly needed.
+  - `/tmp` is `tmpfs`, and long file dumps can push the board into `OOM`.
 - Prefer short, reproducible test runs first, then move to longer RTSP/ffplay validation.
