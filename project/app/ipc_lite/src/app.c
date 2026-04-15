@@ -15,6 +15,7 @@
 #include "mpi_pipeline.h"
 #include "rtmp_sink.h"
 #include "rtsp_sink.h"
+#include "udp_rtp_sink.h"
 #include "wifi_status.h"
 
 static volatile sig_atomic_t g_stop_requested = 0;
@@ -97,7 +98,7 @@ static void log_config_summary(const IPC_LITE_CONFIG *config) {
                 config->video.venc_channel);
   IPC_LITE_LOGI("app",
                 "aiq=%s iq_dir=%s in_buf=%d venc_buf=%d/%d ref_share=%s "
-                "sensor_fps=%s scene=%d rtsp=%s file=%s",
+                "sensor_fps=%s scene=%d rtsp=%s udp_rtp=%s file=%s",
                 config->isp.enable_aiq ? "on" : "off", config->isp.iq_dir,
                 config->video.input_buffer_count,
                 config->video.venc_buffer_count,
@@ -106,6 +107,7 @@ static void log_config_summary(const IPC_LITE_CONFIG *config) {
                 config->video.sync_sensor_fps ? "sync" : "keep",
                 config->video.scene_mode,
                 config->rtsp.enable ? "on" : "off",
+                config->udp_rtp.enable ? "on" : "off",
                 config->file_output.enable ? config->file_output.path : "off");
   IPC_LITE_LOGI("app",
                 "idr_start=%s idr_rtsp=%s motion_deblur=%s(%d) "
@@ -186,7 +188,7 @@ static void reset_periodic_stats(IPC_LITE_MPI_PIPELINE *pipeline,
 }
 
 static bool config_uses_network_sinks(const IPC_LITE_CONFIG *config) {
-  return config->rtsp.enable || config->rtmp.enable;
+  return config->rtsp.enable || config->rtmp.enable || config->udp_rtp.enable;
 }
 
 static int start_stream_stack(const IPC_LITE_CONFIG *config,
@@ -226,7 +228,7 @@ int ipc_lite_run(const char *config_path) {
   IPC_LITE_CONFIG active_config;
   IPC_LITE_ISP_CONTEXT isp;
   IPC_LITE_MPI_PIPELINE pipeline;
-  IPC_LITE_STREAM_SINK sinks[3];
+  IPC_LITE_STREAM_SINK sinks[4];
   IPC_LITE_PERIODIC_STATS periodic_stats;
   IPC_LITE_HEALTH_STATE health_state;
   IPC_LITE_STATS_SAMPLE stats_sample;
@@ -256,10 +258,12 @@ int ipc_lite_run(const char *config_path) {
   ipc_lite_file_sink_init(&sinks[0]);
   ipc_lite_rtsp_sink_init(&sinks[1]);
   ipc_lite_rtmp_sink_init(&sinks[2]);
+  ipc_lite_udp_rtp_sink_init(&sinks[3]);
 
-  if (config_uses_network_sinks(&config)) {
+  if (config.app.enable_preflight && config_uses_network_sinks(&config)) {
     active_config.rtsp.enable = false;
     active_config.rtmp.enable = false;
+    active_config.udp_rtp.enable = false;
     IPC_LITE_LOGI("app",
                   "starting in preflight mode with network sinks disabled");
   }
@@ -281,7 +285,8 @@ int ipc_lite_run(const char *config_path) {
       sample_pipeline_stats(&pipeline, &periodic_stats, &stats_sample);
       log_periodic_stats(&config, &stats_sample);
 
-      if (sample_requires_restart(&stats_sample)) {
+      if (config.app.enable_health_restart &&
+          sample_requires_restart(&stats_sample)) {
         health_state.restart_count++;
         IPC_LITE_LOGW("app",
                       "detected unhealthy stream state "
@@ -298,9 +303,10 @@ int ipc_lite_run(const char *config_path) {
         usleep(200000);
         health_state.preflight_healthy_intervals = 0;
         active_config = config;
-        if (config_uses_network_sinks(&config)) {
+        if (config.app.enable_preflight && config_uses_network_sinks(&config)) {
           active_config.rtsp.enable = false;
           active_config.rtmp.enable = false;
+          active_config.udp_rtp.enable = false;
           IPC_LITE_LOGI("app",
                         "retrying in preflight mode with network sinks "
                         "disabled");
@@ -314,6 +320,7 @@ int ipc_lite_run(const char *config_path) {
       }
 
       if (!active_config.rtsp.enable && !active_config.rtmp.enable &&
+          !active_config.udp_rtp.enable && config.app.enable_preflight &&
           config_uses_network_sinks(&config)) {
         health_state.preflight_healthy_intervals++;
         if (health_state.preflight_healthy_intervals < 2U) {

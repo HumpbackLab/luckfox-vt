@@ -149,6 +149,8 @@ void ipc_lite_config_set_defaults(IPC_LITE_CONFIG *config) {
   set_string(config->app.name, sizeof(config->app.name), "ipc_lite");
   config->app.log_level = IPC_LITE_LOG_LEVEL_INFO;
   config->app.stats_interval_sec = 2;
+  config->app.enable_preflight = true;
+  config->app.enable_health_restart = true;
 
   config->isp.enable_aiq = true;
   config->isp.cam_id = 0;
@@ -196,6 +198,12 @@ void ipc_lite_config_set_defaults(IPC_LITE_CONFIG *config) {
   set_string(config->rtmp.url, sizeof(config->rtmp.url),
              "rtmp://127.0.0.1:1935/live/mainstream");
 
+  config->udp_rtp.enable = false;
+  set_string(config->udp_rtp.host, sizeof(config->udp_rtp.host), "");
+  config->udp_rtp.port = 5600;
+  config->udp_rtp.payload_type = 96;
+  config->udp_rtp.mtu = 1200;
+
   config->wifi.enable_status = true;
   set_string(config->wifi.ifname, sizeof(config->wifi.ifname), "wlan0");
 
@@ -216,6 +224,20 @@ static int apply_value(IPC_LITE_CONFIG *config, const char *section,
     }
     if (!strcmp(key, "stats_interval_sec")) {
       return parse_int(value, &config->app.stats_interval_sec);
+    }
+    if (!strcmp(key, "enable_preflight")) {
+      if (parse_bool(value, &bool_value)) {
+        return -1;
+      }
+      config->app.enable_preflight = bool_value;
+      return 0;
+    }
+    if (!strcmp(key, "enable_health_restart")) {
+      if (parse_bool(value, &bool_value)) {
+        return -1;
+      }
+      config->app.enable_health_restart = bool_value;
+      return 0;
     }
   } else if (!strcmp(section, "isp")) {
     if (!strcmp(key, "enable_aiq")) {
@@ -385,6 +407,27 @@ static int apply_value(IPC_LITE_CONFIG *config, const char *section,
       set_string(config->rtmp.url, sizeof(config->rtmp.url), value);
       return 0;
     }
+  } else if (!strcmp(section, "output.udp_rtp")) {
+    if (!strcmp(key, "enable")) {
+      if (parse_bool(value, &bool_value)) {
+        return -1;
+      }
+      config->udp_rtp.enable = bool_value;
+      return 0;
+    }
+    if (!strcmp(key, "host")) {
+      set_string(config->udp_rtp.host, sizeof(config->udp_rtp.host), value);
+      return 0;
+    }
+    if (!strcmp(key, "port")) {
+      return parse_int(value, &config->udp_rtp.port);
+    }
+    if (!strcmp(key, "payload_type")) {
+      return parse_int(value, &config->udp_rtp.payload_type);
+    }
+    if (!strcmp(key, "mtu")) {
+      return parse_int(value, &config->udp_rtp.mtu);
+    }
   } else if (!strcmp(section, "wifi")) {
     if (!strcmp(key, "enable_status")) {
       if (parse_bool(value, &bool_value)) {
@@ -437,6 +480,14 @@ static int validate(const IPC_LITE_CONFIG *config) {
 
   if (config->rtsp.enable && config->rtsp.port <= 0) {
     return -1;
+  }
+
+  if (config->udp_rtp.enable) {
+    if (config->udp_rtp.host[0] == '\0' || config->udp_rtp.port <= 0 ||
+        config->udp_rtp.payload_type <= 0 ||
+        config->udp_rtp.payload_type >= 128 || config->udp_rtp.mtu < 256) {
+      return -1;
+    }
   }
 
   return 0;

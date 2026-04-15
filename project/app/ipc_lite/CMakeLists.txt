@@ -25,6 +25,7 @@ add_executable(ipc_lite
   src/file_sink.c
   src/rtsp_sink.c
   src/rtmp_sink.c
+  src/udp_rtp_sink.c
   src/wifi_status.c
 )
 
@@ -56,6 +57,7 @@ install(TARGETS ipc_lite DESTINATION ipc_lite)
 install(FILES
   ipc_lite.ini
   ipc_lite.720p.lowlat.rtsp.ini
+  ipc_lite.720p60.fast.udp.ini
   DESTINATION ipc_lite
 )
 install(PROGRAMS run.sh DESTINATION ipc_lite)

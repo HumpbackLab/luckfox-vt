@@ -31,6 +31,8 @@ typedef struct {
   char name[IPC_LITE_NAME_MAX];
   IPC_LITE_LOG_LEVEL log_level;
   int stats_interval_sec;
+  bool enable_preflight;
+  bool enable_health_restart;
 } IPC_LITE_APP_SECTION;
 
 typedef struct {
@@ -87,6 +89,14 @@ typedef struct {
 } IPC_LITE_RTMP_SECTION;
 
 typedef struct {
+  bool enable;
+  char host[IPC_LITE_PATH_MAX];
+  int port;
+  int payload_type;
+  int mtu;
+} IPC_LITE_UDP_RTP_SECTION;
+
+typedef struct {
   bool enable_status;
   char ifname[IPC_LITE_IFNAME_MAX];
 } IPC_LITE_WIFI_SECTION;
@@ -103,6 +113,7 @@ typedef struct {
   IPC_LITE_FILE_OUTPUT_SECTION file_output;
   IPC_LITE_RTSP_SECTION rtsp;
   IPC_LITE_RTMP_SECTION rtmp;
+  IPC_LITE_UDP_RTP_SECTION udp_rtp;
   IPC_LITE_WIFI_SECTION wifi;
   IPC_LITE_DEBUG_SECTION debug;
 } IPC_LITE_CONFIG;
