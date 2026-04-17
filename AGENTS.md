@@ -18,7 +18,9 @@ Use it as the default operational baseline unless the user explicitly overrides 
 
 - Username: `root`
 - Password: `luckfox`
-- Current board IP: `192.168.137.154`
+- Board IP: use the currently assigned Luckfox board IP address.
+- Receiver PC IP: use the current PC/client IP only for UDP/RTP, RTSP client, or
+  other host-side receiving endpoints.
 
 ## Access Priority
 
@@ -54,11 +56,45 @@ Use serial when:
 
 ## Deployment Conventions
 
+### `mis5001` Kernel Module
+
+When building or deploying the `mis5001` kernel driver, use the repository helper
+script instead of hand-written `scp` / `ssh` module replacement commands:
+
+```sh
+MIS5001_BOARD_IP=<board-ip> project/scripts/mis5001-dev.sh build
+MIS5001_BOARD_IP=<board-ip> project/scripts/mis5001-dev.sh deploy
+MIS5001_BOARD_IP=<board-ip> project/scripts/mis5001-dev.sh reboot-reload
+```
+
+Useful inspection commands:
+
+```sh
+MIS5001_BOARD_IP=<board-ip> project/scripts/mis5001-dev.sh board-state
+MIS5001_BOARD_IP=<board-ip> project/scripts/mis5001-dev.sh logs
+```
+
+Notes:
+
+- `<board-ip>` means the Luckfox board IP address, not the receiving PC /
+  RTP/UDP client IP.
+- The script reads `.BoardConfig.mk` when present; in this repository that selects
+  `RK_KERNEL_DEFCONFIG=luckfox_rv1106_linux_defconfig`.
+- The script builds against `/tmp/luckfox-vt-objs_kernel` by default.
+- `deploy` uploads the new module as `/oem/usr/ko/mis5001.ko.new`.
+- `reboot-reload` swaps `.new` into `/oem/usr/ko/mis5001.ko`, preserves the
+  previous module as `.prev`, reboots the board, waits for it to return, then
+  prints board state and recent camera logs.
+- Do not manually overwrite `/oem/usr/ko/mis5001.ko` unless the user explicitly
+  requests bypassing the helper script.
+
+### `ipc_lite`
+
 When deploying `ipc_lite`, prefer:
 
 ```sh
-scp project/app/ipc_lite/out/ipc_lite/{ipc_lite,ipc_lite.ini,run.sh} root@192.168.137.154:/root/ipc_lite/
-ssh root@192.168.137.154 'cd /root/ipc_lite && chmod +x ipc_lite run.sh && ./run.sh'
+scp project/app/ipc_lite/out/ipc_lite/{ipc_lite,ipc_lite.ini,run.sh} root@<board-ip>:/root/ipc_lite/
+ssh root@<board-ip> 'cd /root/ipc_lite && chmod +x ipc_lite run.sh && ./run.sh'
 ```
 
 Only fall back to serial upload if network transfer is not possible.
@@ -95,3 +131,6 @@ cd /root/ipc_lite
 - Keep `file = off` during RTSP and performance validation unless a short local capture is explicitly needed.
   - `/tmp` is `tmpfs`, and long file dumps can push the board into `OOM`.
 - Prefer short, reproducible test runs first, then move to longer RTSP/ffplay validation.
+- If a kernel replacement leaves the board unable to boot normally, it is acceptable
+  to write a small host-side recovery script that opens the serial console and sends
+  `Ctrl-C` to U-Boot so the boot environment can be inspected or repaired.
