@@ -110,6 +110,13 @@ static double stats_avg_ms(const TimeStats *stats) {
                       : 0.0;
 }
 
+static uint64_t mpi_frame_size(const IPC_LITE_CONFIG *config) {
+  uint64_t width = ALIGN_UP((uint64_t)config->video.width, 16U);
+  uint64_t height = ALIGN_UP((uint64_t)config->video.height, 16U);
+
+  return width * height * 3 / 2;
+}
+
 static int xioctl(int fd, unsigned long request, void *arg) {
   int ret = 0;
   do {
@@ -341,6 +348,8 @@ int main(int argc, char **argv) {
   TimeStats end_to_end = {0};
   uint64_t bytes = 0;
   uint64_t drained_total = 0;
+  uint64_t capture_start_us = 0;
+  uint64_t capture_elapsed_us = 0;
 
   ret = parse_args(argc, argv, &args);
   if (ret > 0) {
@@ -415,6 +424,8 @@ int main(int argc, char **argv) {
   }
 
   frame_size = (uint64_t)fmt.fmt.pix_mp.plane_fmt[0].sizeimage;
+  frame_size = frame_size > mpi_frame_size(&config) ? frame_size
+                                                    : mpi_frame_size(&config);
   for (i = 0; i < req.count; ++i) {
     uint64_t setup_start_us = monotonic_us();
 
@@ -465,6 +476,7 @@ int main(int argc, char **argv) {
       return 1;
     }
   }
+  capture_start_us = monotonic_us();
 
   memset(&stream, 0, sizeof(stream));
   stream.pstPack = calloc(1, sizeof(*stream.pstPack));
@@ -615,13 +627,19 @@ int main(int argc, char **argv) {
              stream.pstPack->u32Len, packet.key_frame ? 1 : 0, drained);
     }
   }
+  capture_elapsed_us = monotonic_us() - capture_start_us;
 
   printf("summary frames=%u bytes=%llu drained=%llu mode=mpi-dmabuf "
-         "age=%.3f/%.3fms wait=%.3f/%.3fms "
+         "elapsed=%.3fs fps=%.2f age=%.3f/%.3fms wait=%.3f/%.3fms "
          "buffer_setup=%.3f/%.3fms sync=%.3f/%.3fms send=%.3f/%.3fms "
          "get=%.3f/%.3fms sink=%.3f/%.3fms total_since_v4l2_ts=%.3f/%.3fms\n",
          sent_frames, (unsigned long long)bytes,
-         (unsigned long long)drained_total, stats_avg_ms(&age),
+         (unsigned long long)drained_total,
+         (double)capture_elapsed_us / 1000000.0,
+         capture_elapsed_us ? (double)sent_frames * 1000000.0 /
+                                  (double)capture_elapsed_us
+                            : 0.0,
+         stats_avg_ms(&age),
          (double)age.max_us / 1000.0, stats_avg_ms(&wait),
          (double)wait.max_us / 1000.0, stats_avg_ms(&buffer_setup),
          (double)buffer_setup.max_us / 1000.0, stats_avg_ms(&buffer_sync),
