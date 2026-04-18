@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <linux/videodev2.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -55,6 +56,33 @@ typedef struct {
   unsigned int buffers;
   bool drain_latest;
 } ProbeArgs;
+
+typedef struct {
+  ProbeArgs args;
+  IPC_LITE_CONFIG *config;
+  IPC_LITE_STREAM_SINK *sink;
+  V4l2Buffer *buffers;
+  int fd;
+  unsigned int planes_count;
+  unsigned int frame_size;
+  unsigned int sent_frames;
+  unsigned int stream_frames;
+  uint64_t bytes;
+  uint64_t drained_total;
+  uint64_t capture_start_us;
+  uint64_t capture_elapsed_us;
+  bool capture_done;
+  int error;
+  pthread_mutex_t lock;
+  TimeStats age;
+  TimeStats wait;
+  TimeStats buffer_setup;
+  TimeStats buffer_sync;
+  TimeStats send_frame;
+  TimeStats get_stream;
+  TimeStats sink_write;
+  TimeStats end_to_end;
+} ProbeRuntime;
 
 static const char *fourcc_to_str(RK_U32 fourcc, char out[5]) {
   out[0] = (char)(fourcc & 0xff);
@@ -115,6 +143,22 @@ static uint64_t mpi_frame_size(const IPC_LITE_CONFIG *config) {
   uint64_t height = ALIGN_UP((uint64_t)config->video.height, 16U);
 
   return width * height * 3 / 2;
+}
+
+static void force_sensor_mode(const IPC_LITE_CONFIG *config) {
+  char command[256];
+  int ret = 0;
+
+  snprintf(command, sizeof(command),
+           "media-ctl -d /dev/media0 --set-v4l2 "
+           "\"'m00_b_mis5001 4-0031':0[fmt:SGRBG10_1X10/%dx%d]\" "
+           ">/dev/null 2>&1",
+           config->video.width, config->video.height);
+  ret = system(command);
+  if (ret != 0) {
+    IPC_LITE_LOGW("v4l2_mpi", "failed to force sensor mode %dx%d",
+                  config->video.width, config->video.height);
+  }
 }
 
 static int xioctl(int fd, unsigned long request, void *arg) {
@@ -322,34 +366,242 @@ static int venc_init(const IPC_LITE_CONFIG *config, PIXEL_FORMAT_E pixfmt) {
   return 0;
 }
 
+static void runtime_set_done(ProbeRuntime *rt, int error) {
+  pthread_mutex_lock(&rt->lock);
+  rt->capture_done = true;
+  if (error != 0 && rt->error == 0) {
+    rt->error = error;
+  }
+  pthread_mutex_unlock(&rt->lock);
+}
+
+static void *capture_thread_main(void *arg) {
+  ProbeRuntime *rt = (ProbeRuntime *)arg;
+  IPC_LITE_CONFIG *config = rt->config;
+
+  while (!g_stop_requested &&
+         (rt->args.frames == 0 || rt->sent_frames < rt->args.frames)) {
+    struct v4l2_buffer vbuf;
+    struct v4l2_plane planes[VIDEO_MAX_PLANES];
+    VIDEO_FRAME_INFO_S frame;
+    uint64_t poll_start_us = monotonic_us();
+    uint64_t dq_done_us = 0;
+    uint64_t ts_us = 0;
+    unsigned int drained = 0;
+    int ret = 0;
+
+    if (wait_for_v4l2_frame(rt->fd) != 0) {
+      continue;
+    }
+
+    if (dequeue_v4l2_buffer(rt->fd, rt->planes_count, &vbuf, planes) == -1) {
+      if (errno == EAGAIN) {
+        continue;
+      }
+      fprintf(stderr, "VIDIOC_DQBUF failed: %s\n", strerror(errno));
+      runtime_set_done(rt, -1);
+      return NULL;
+    }
+    dq_done_us = monotonic_us();
+
+    if (rt->args.drain_latest) {
+      struct v4l2_buffer latest = vbuf;
+      struct v4l2_plane latest_planes[VIDEO_MAX_PLANES];
+      while (dequeue_v4l2_buffer(rt->fd, rt->planes_count, &latest,
+                                 latest_planes) == 0) {
+        queue_v4l2_buffer(rt->fd, vbuf.index, rt->planes_count,
+                          rt->buffers[vbuf.index].fd, rt->frame_size);
+        vbuf = latest;
+        memcpy(planes, latest_planes, sizeof(planes));
+        drained++;
+      }
+      dq_done_us = monotonic_us();
+    }
+
+    ts_us = timeval_to_us(&vbuf.timestamp);
+
+    pthread_mutex_lock(&rt->lock);
+    stats_add(&rt->wait, dq_done_us - poll_start_us);
+    if (ts_us != 0 && dq_done_us >= ts_us &&
+        dq_done_us - ts_us < 10000000ULL) {
+      stats_add(&rt->age, dq_done_us - ts_us);
+    }
+    rt->drained_total += drained;
+    pthread_mutex_unlock(&rt->lock);
+
+    {
+      uint64_t sync_start_us = monotonic_us();
+      ret = RK_MPI_SYS_MmzFlushCache(rt->buffers[vbuf.index].mb, RK_TRUE);
+      pthread_mutex_lock(&rt->lock);
+      stats_add(&rt->buffer_sync, monotonic_us() - sync_start_us);
+      pthread_mutex_unlock(&rt->lock);
+      if (ret != RK_SUCCESS) {
+        fprintf(stderr, "RK_MPI_SYS_MmzFlushCache failed %#x\n", ret);
+        queue_v4l2_buffer(rt->fd, vbuf.index, rt->planes_count,
+                          rt->buffers[vbuf.index].fd, rt->frame_size);
+        runtime_set_done(rt, -1);
+        return NULL;
+      }
+    }
+
+    memset(&frame, 0, sizeof(frame));
+    {
+      uint8_t *base =
+          (uint8_t *)RK_MPI_MB_Handle2VirAddr(rt->buffers[vbuf.index].mb);
+      unsigned int stride = ALIGN_UP((RK_U32)config->video.width, 16U);
+      frame.stVFrame.pVirAddr[0] = base;
+      frame.stVFrame.pVirAddr[1] =
+          base ? base + stride * config->video.height : NULL;
+    }
+    frame.stVFrame.pMbBlk = rt->buffers[vbuf.index].mb;
+    frame.stVFrame.u32Width = (RK_U32)config->video.width;
+    frame.stVFrame.u32Height = (RK_U32)config->video.height;
+    frame.stVFrame.u32VirWidth = ALIGN_UP((RK_U32)config->video.width, 16U);
+    frame.stVFrame.u32VirHeight = ALIGN_UP((RK_U32)config->video.height, 16U);
+    frame.stVFrame.enPixelFormat = rt->args.mpi_pixfmt;
+    frame.stVFrame.enCompressMode = COMPRESS_MODE_NONE;
+    frame.stVFrame.u64PTS = ts_us ? ts_us : dq_done_us;
+
+    {
+      uint64_t send_start_us = monotonic_us();
+      ret = RK_MPI_VENC_SendFrame(config->video.venc_channel, &frame,
+                                  config->video.venc_timeout_ms);
+      pthread_mutex_lock(&rt->lock);
+      stats_add(&rt->send_frame, monotonic_us() - send_start_us);
+      pthread_mutex_unlock(&rt->lock);
+    }
+
+    queue_v4l2_buffer(rt->fd, vbuf.index, rt->planes_count,
+                      rt->buffers[vbuf.index].fd, rt->frame_size);
+
+    if (ret != RK_SUCCESS) {
+      fprintf(stderr, "RK_MPI_VENC_SendFrame failed %#x\n", ret);
+      runtime_set_done(rt, -1);
+      return NULL;
+    }
+
+    pthread_mutex_lock(&rt->lock);
+    rt->sent_frames++;
+    pthread_mutex_unlock(&rt->lock);
+  }
+
+  runtime_set_done(rt, 0);
+  return NULL;
+}
+
+static void *stream_thread_main(void *arg) {
+  ProbeRuntime *rt = (ProbeRuntime *)arg;
+  IPC_LITE_CONFIG *config = rt->config;
+  VENC_STREAM_S stream;
+  unsigned int idle_after_done = 0;
+
+  memset(&stream, 0, sizeof(stream));
+  stream.pstPack = calloc(1, sizeof(*stream.pstPack));
+  if (!stream.pstPack) {
+    runtime_set_done(rt, -1);
+    return NULL;
+  }
+
+  while (!g_stop_requested) {
+    IPC_LITE_STREAM_PACKET packet;
+    uint64_t get_start_us = monotonic_us();
+    uint64_t get_elapsed_us = 0;
+    uint64_t sink_elapsed_us = 0;
+    uint64_t total_us = 0;
+    uint64_t packet_pts = 0;
+    unsigned int stream_frame = 0;
+    unsigned int sent_frames = 0;
+    bool capture_done = false;
+    bool key_frame = false;
+    RK_U32 len = 0;
+    int ret = 0;
+
+    ret = RK_MPI_VENC_GetStream(config->video.venc_channel, &stream,
+                                config->video.venc_timeout_ms);
+    get_elapsed_us = monotonic_us() - get_start_us;
+    pthread_mutex_lock(&rt->lock);
+    stats_add(&rt->get_stream, get_elapsed_us);
+    capture_done = rt->capture_done;
+    sent_frames = rt->sent_frames;
+    stream_frame = rt->stream_frames;
+    pthread_mutex_unlock(&rt->lock);
+
+    if (ret != RK_SUCCESS) {
+      if (capture_done && (++idle_after_done >= 3 ||
+                           stream_frame >= sent_frames)) {
+        break;
+      }
+      continue;
+    }
+    idle_after_done = 0;
+
+    memset(&packet, 0, sizeof(packet));
+    packet.data =
+        (const uint8_t *)RK_MPI_MB_Handle2VirAddr(stream.pstPack->pMbBlk);
+    packet.len = stream.pstPack->u32Len;
+    packet.pts = stream.pstPack->u64PTS;
+    packet.key_frame =
+        h264_packet_is_key(stream.pstPack, packet.data, packet.len);
+
+    {
+      uint64_t sink_start_us = monotonic_us();
+      if (rt->sink->write) {
+        rt->sink->write(rt->sink, &packet);
+      }
+      sink_elapsed_us = monotonic_us() - sink_start_us;
+    }
+
+    packet_pts = packet.pts;
+    len = stream.pstPack->u32Len;
+    key_frame = packet.key_frame;
+    if (packet_pts != 0) {
+      total_us = monotonic_us() - packet_pts;
+    }
+
+    RK_MPI_VENC_ReleaseStream(config->video.venc_channel, &stream);
+
+    pthread_mutex_lock(&rt->lock);
+    stats_add(&rt->sink_write, sink_elapsed_us);
+    if (packet_pts != 0) {
+      stats_add(&rt->end_to_end, total_us);
+    }
+    rt->bytes += len;
+    rt->stream_frames++;
+    stream_frame = rt->stream_frames;
+    sent_frames = rt->sent_frames;
+    pthread_mutex_unlock(&rt->lock);
+
+    if (stream_frame <= 5 || stream_frame % 60 == 0) {
+      printf("stream=%u sent=%u pts_age=%.3fms get=%.3fms sink=%.3fms "
+             "len=%u key=%d\n",
+             stream_frame, sent_frames,
+             packet_pts ? (double)total_us / 1000.0 : 0.0,
+             (double)get_elapsed_us / 1000.0,
+             (double)sink_elapsed_us / 1000.0, len, key_frame ? 1 : 0);
+    }
+  }
+
+  free(stream.pstPack);
+  return NULL;
+}
+
 int main(int argc, char **argv) {
   ProbeArgs args;
   IPC_LITE_CONFIG config;
   IPC_LITE_ISP_CONTEXT isp;
   IPC_LITE_STREAM_SINK sink;
+  ProbeRuntime runtime;
   struct v4l2_format fmt;
   struct v4l2_requestbuffers req;
   V4l2Buffer buffers[8];
-  VIDEO_FRAME_INFO_S frame;
-  VENC_STREAM_S stream;
+  pthread_t capture_thread;
+  pthread_t stream_thread;
   unsigned int planes_count = 1;
   unsigned int i = 0;
-  unsigned int sent_frames = 0;
   int fd = -1;
   int ret = 0;
   uint64_t frame_size = 0;
-  TimeStats age = {0};
-  TimeStats wait = {0};
   TimeStats buffer_setup = {0};
-  TimeStats buffer_sync = {0};
-  TimeStats send_frame = {0};
-  TimeStats get_stream = {0};
-  TimeStats sink_write = {0};
-  TimeStats end_to_end = {0};
-  uint64_t bytes = 0;
-  uint64_t drained_total = 0;
-  uint64_t capture_start_us = 0;
-  uint64_t capture_elapsed_us = 0;
 
   ret = parse_args(argc, argv, &args);
   if (ret > 0) {
@@ -368,6 +620,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "v4l2_mpi_venc_probe currently supports h264 only\n");
     return 1;
   }
+  force_sensor_mode(&config);
   memset(&isp, 0, sizeof(isp));
   if (ipc_lite_isp_start(&isp, &config) != 0) {
     fprintf(stderr, "failed to start isp\n");
@@ -476,18 +729,11 @@ int main(int argc, char **argv) {
       return 1;
     }
   }
-  capture_start_us = monotonic_us();
-
-  memset(&stream, 0, sizeof(stream));
-  stream.pstPack = calloc(1, sizeof(*stream.pstPack));
-  if (!stream.pstPack) {
-    return 1;
-  }
 
   {
     char negotiated_fourcc[5];
     printf("v4l2_mpi_venc_probe dev=%s %dx%d fps=%d frames=%u buffers=%u "
-           "drain=%s mode=mpi-dmabuf pixfmt=%s negotiated=%s "
+           "drain=%s mode=mpi-dmabuf threaded=yes pixfmt=%s negotiated=%s "
            "bytesperline=%u frame_size=%llu\n",
          args.dev, config.video.width, config.video.height, config.video.fps,
          args.frames, req.count, args.drain_latest ? "on" : "off",
@@ -497,162 +743,75 @@ int main(int argc, char **argv) {
          (unsigned long long)frame_size);
   }
 
-  while (!g_stop_requested && (args.frames == 0 || sent_frames < args.frames)) {
-    struct v4l2_buffer vbuf;
-    struct v4l2_plane planes[VIDEO_MAX_PLANES];
-    uint64_t poll_start_us = monotonic_us();
-    uint64_t dq_done_us = 0;
-    uint64_t ts_us = 0;
-    uint64_t send_start_us = 0;
-    uint64_t get_start_us = 0;
-    uint64_t sink_start_us = 0;
-    unsigned int drained = 0;
-    IPC_LITE_STREAM_PACKET packet;
-
-    if (wait_for_v4l2_frame(fd) != 0) {
-      continue;
-    }
-
-    if (dequeue_v4l2_buffer(fd, planes_count, &vbuf, planes) == -1) {
-      if (errno == EAGAIN) {
-        continue;
-      }
-      fprintf(stderr, "VIDIOC_DQBUF failed: %s\n", strerror(errno));
-      break;
-    }
-    dq_done_us = monotonic_us();
-
-    if (args.drain_latest) {
-      struct v4l2_buffer latest = vbuf;
-      struct v4l2_plane latest_planes[VIDEO_MAX_PLANES];
-      while (dequeue_v4l2_buffer(fd, planes_count, &latest, latest_planes) ==
-             0) {
-        queue_v4l2_buffer(fd, vbuf.index, planes_count, buffers[vbuf.index].fd,
-                          (unsigned int)frame_size);
-        vbuf = latest;
-        memcpy(planes, latest_planes, sizeof(planes));
-        drained++;
-      }
-      dq_done_us = monotonic_us();
-      drained_total += drained;
-    }
-
-    ts_us = timeval_to_us(&vbuf.timestamp);
-    stats_add(&wait, dq_done_us - poll_start_us);
-    if (ts_us != 0 && dq_done_us >= ts_us && dq_done_us - ts_us < 10000000ULL) {
-      stats_add(&age, dq_done_us - ts_us);
-    }
-
-    {
-      uint64_t sync_start_us = monotonic_us();
-      ret = RK_MPI_SYS_MmzFlushCache(buffers[vbuf.index].mb, RK_TRUE);
-      stats_add(&buffer_sync, monotonic_us() - sync_start_us);
-      if (ret != RK_SUCCESS) {
-        fprintf(stderr, "RK_MPI_SYS_MmzFlushCache failed %#x\n", ret);
-        queue_v4l2_buffer(fd, vbuf.index, planes_count, buffers[vbuf.index].fd,
-                          (unsigned int)frame_size);
-        break;
-      }
-    }
-
-    memset(&frame, 0, sizeof(frame));
-    {
-      uint8_t *base = (uint8_t *)RK_MPI_MB_Handle2VirAddr(buffers[vbuf.index].mb);
-      unsigned int stride = ALIGN_UP((RK_U32)config.video.width, 16U);
-      frame.stVFrame.pVirAddr[0] = base;
-      frame.stVFrame.pVirAddr[1] = base ? base + stride * config.video.height : NULL;
-    }
-    frame.stVFrame.pMbBlk = buffers[vbuf.index].mb;
-    frame.stVFrame.u32Width = (RK_U32)config.video.width;
-    frame.stVFrame.u32Height = (RK_U32)config.video.height;
-    frame.stVFrame.u32VirWidth = ALIGN_UP((RK_U32)config.video.width, 16U);
-    frame.stVFrame.u32VirHeight = ALIGN_UP((RK_U32)config.video.height, 16U);
-    frame.stVFrame.enPixelFormat = args.mpi_pixfmt;
-    frame.stVFrame.enCompressMode = COMPRESS_MODE_NONE;
-    frame.stVFrame.u64PTS = ts_us ? ts_us : dq_done_us;
-
-    send_start_us = monotonic_us();
-    ret = RK_MPI_VENC_SendFrame(config.video.venc_channel, &frame,
-                                config.video.venc_timeout_ms);
-    stats_add(&send_frame, monotonic_us() - send_start_us);
-    if (ret != RK_SUCCESS) {
-      fprintf(stderr, "RK_MPI_VENC_SendFrame failed %#x\n", ret);
-      queue_v4l2_buffer(fd, vbuf.index, planes_count, buffers[vbuf.index].fd,
-                        (unsigned int)frame_size);
-      break;
-    }
-
-    get_start_us = monotonic_us();
-    ret = RK_MPI_VENC_GetStream(config.video.venc_channel, &stream,
-                                config.video.venc_timeout_ms);
-    stats_add(&get_stream, monotonic_us() - get_start_us);
-    if (ret != RK_SUCCESS) {
-      fprintf(stderr, "RK_MPI_VENC_GetStream failed %#x\n", ret);
-      queue_v4l2_buffer(fd, vbuf.index, planes_count, buffers[vbuf.index].fd,
-                        (unsigned int)frame_size);
-      continue;
-    }
-
-    memset(&packet, 0, sizeof(packet));
-    packet.data = (const uint8_t *)RK_MPI_MB_Handle2VirAddr(stream.pstPack->pMbBlk);
-    packet.len = stream.pstPack->u32Len;
-    packet.pts = stream.pstPack->u64PTS ? stream.pstPack->u64PTS : frame.stVFrame.u64PTS;
-    packet.key_frame = h264_packet_is_key(stream.pstPack, packet.data, packet.len);
-
-    sink_start_us = monotonic_us();
-    if (sink.write) {
-      sink.write(&sink, &packet);
-    }
-    stats_add(&sink_write, monotonic_us() - sink_start_us);
-
-    bytes += packet.len;
-    if (ts_us != 0) {
-      stats_add(&end_to_end, monotonic_us() - ts_us);
-    }
-
-    RK_MPI_VENC_ReleaseStream(config.video.venc_channel, &stream);
-    queue_v4l2_buffer(fd, vbuf.index, planes_count, buffers[vbuf.index].fd,
-                      (unsigned int)frame_size);
-
-    sent_frames++;
-    if (sent_frames <= 5 || sent_frames % 60 == 0) {
-      printf("frame=%u seq=%u age=%.3fms send=%.3fms "
-             "sync=%.3fms get=%.3fms sink=%.3fms "
-             "total_since_v4l2_ts=%.3fms len=%u key=%d drained=%u\n",
-             sent_frames, vbuf.sequence, ts_us ? (double)(dq_done_us - ts_us) / 1000.0 : 0.0,
-             (double)send_frame.max_us / 1000.0,
-             (double)buffer_sync.max_us / 1000.0,
-             (double)get_stream.max_us / 1000.0, (double)sink_write.max_us / 1000.0,
-             ts_us ? (double)(monotonic_us() - ts_us) / 1000.0 : 0.0,
-             stream.pstPack->u32Len, packet.key_frame ? 1 : 0, drained);
-    }
+  memset(&runtime, 0, sizeof(runtime));
+  runtime.args = args;
+  runtime.config = &config;
+  runtime.sink = &sink;
+  runtime.buffers = buffers;
+  runtime.fd = fd;
+  runtime.planes_count = planes_count;
+  runtime.frame_size = (unsigned int)frame_size;
+  runtime.buffer_setup = buffer_setup;
+  runtime.capture_start_us = monotonic_us();
+  ret = pthread_mutex_init(&runtime.lock, NULL);
+  if (ret != 0) {
+    fprintf(stderr, "pthread_mutex_init failed: %s\n", strerror(ret));
+    return 1;
   }
-  capture_elapsed_us = monotonic_us() - capture_start_us;
 
-  printf("summary frames=%u bytes=%llu drained=%llu mode=mpi-dmabuf "
-         "elapsed=%.3fs fps=%.2f age=%.3f/%.3fms wait=%.3f/%.3fms "
+  ret = pthread_create(&stream_thread, NULL, stream_thread_main, &runtime);
+  if (ret != 0) {
+    fprintf(stderr, "pthread_create stream failed: %s\n", strerror(ret));
+    return 1;
+  }
+  ret = pthread_create(&capture_thread, NULL, capture_thread_main, &runtime);
+  if (ret != 0) {
+    fprintf(stderr, "pthread_create capture failed: %s\n", strerror(ret));
+    g_stop_requested = 1;
+    pthread_join(stream_thread, NULL);
+    return 1;
+  }
+
+  pthread_join(capture_thread, NULL);
+  runtime.capture_elapsed_us = monotonic_us() - runtime.capture_start_us;
+  pthread_join(stream_thread, NULL);
+
+  printf("summary sent=%u streams=%u bytes=%llu drained=%llu mode=mpi-dmabuf "
+         "threaded=yes elapsed=%.3fs capture_fps=%.2f stream_fps=%.2f "
+         "age=%.3f/%.3fms wait=%.3f/%.3fms "
          "buffer_setup=%.3f/%.3fms sync=%.3f/%.3fms send=%.3f/%.3fms "
          "get=%.3f/%.3fms sink=%.3f/%.3fms total_since_v4l2_ts=%.3f/%.3fms\n",
-         sent_frames, (unsigned long long)bytes,
-         (unsigned long long)drained_total,
-         (double)capture_elapsed_us / 1000000.0,
-         capture_elapsed_us ? (double)sent_frames * 1000000.0 /
-                                  (double)capture_elapsed_us
-                            : 0.0,
-         stats_avg_ms(&age),
-         (double)age.max_us / 1000.0, stats_avg_ms(&wait),
-         (double)wait.max_us / 1000.0, stats_avg_ms(&buffer_setup),
-         (double)buffer_setup.max_us / 1000.0, stats_avg_ms(&buffer_sync),
-         (double)buffer_sync.max_us / 1000.0, stats_avg_ms(&send_frame),
-         (double)send_frame.max_us / 1000.0, stats_avg_ms(&get_stream),
-         (double)get_stream.max_us / 1000.0, stats_avg_ms(&sink_write),
-         (double)sink_write.max_us / 1000.0, stats_avg_ms(&end_to_end),
-         (double)end_to_end.max_us / 1000.0);
+         runtime.sent_frames, runtime.stream_frames,
+         (unsigned long long)runtime.bytes,
+         (unsigned long long)runtime.drained_total,
+         (double)runtime.capture_elapsed_us / 1000000.0,
+         runtime.capture_elapsed_us ? (double)runtime.sent_frames * 1000000.0 /
+                                          (double)runtime.capture_elapsed_us
+                                    : 0.0,
+         runtime.capture_elapsed_us ? (double)runtime.stream_frames * 1000000.0 /
+                                          (double)runtime.capture_elapsed_us
+                                    : 0.0,
+         stats_avg_ms(&runtime.age), (double)runtime.age.max_us / 1000.0,
+         stats_avg_ms(&runtime.wait), (double)runtime.wait.max_us / 1000.0,
+         stats_avg_ms(&runtime.buffer_setup),
+         (double)runtime.buffer_setup.max_us / 1000.0,
+         stats_avg_ms(&runtime.buffer_sync),
+         (double)runtime.buffer_sync.max_us / 1000.0,
+         stats_avg_ms(&runtime.send_frame),
+         (double)runtime.send_frame.max_us / 1000.0,
+         stats_avg_ms(&runtime.get_stream),
+         (double)runtime.get_stream.max_us / 1000.0,
+         stats_avg_ms(&runtime.sink_write),
+         (double)runtime.sink_write.max_us / 1000.0,
+         stats_avg_ms(&runtime.end_to_end),
+         (double)runtime.end_to_end.max_us / 1000.0);
+
+  ret = runtime.error != 0 ? 1 : 0;
+  pthread_mutex_destroy(&runtime.lock);
 
   if (sink.close) {
     sink.close(&sink);
   }
-  free(stream.pstPack);
   RK_MPI_VENC_StopRecvFrame(config.video.venc_channel);
   RK_MPI_VENC_DestroyChn(config.video.venc_channel);
   {
@@ -673,5 +832,5 @@ int main(int argc, char **argv) {
     }
   }
   close(fd);
-  return 0;
+  return ret;
 }
