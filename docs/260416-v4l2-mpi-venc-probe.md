@@ -238,6 +238,36 @@ summary sent=1200 streams=1200 bytes=10203768 drained=0 mode=mpi-dmabuf threaded
   或 VENC 失败。
 - 该结论不覆盖 UDP/RTP 发送端或接收端吞吐，网络输出需要单独测试。
 
+UDP RTP 打开后的对照测试：
+
+```sh
+./v4l2_mpi_venc_probe \
+  -c ./ipc_lite.1104x624p120.fast.udp.ini \
+  -d /dev/video12 \
+  -n 1200 \
+  -b 4 \
+  --pixfmt nv12 \
+  --sensor-mode 1104x624
+```
+
+发往当前主机 `192.168.3.51:5600` 时，1200 帧测试结果：
+
+```text
+summary sent=1200 streams=853 bytes=7330974 drained=0 mode=mpi-dmabuf threaded=yes elapsed=9.999s capture_fps=120.01 stream_fps=85.31 age=9.291/17.880ms wait=6.302/15.546ms buffer_setup=1.159/1.261ms sync=0.291/0.593ms send=1.574/11.182ms get=1.735/200.543ms sink=9.612/311.727ms total_since_v4l2_ts=1152.846/1379.852ms
+```
+
+此时 sensor/V4L2/VENC capture 仍是 120fps，但 UDP sink 写 socket
+平均 9.6ms，最大 311ms，stream 线程只能到 85fps。
+
+临时把同一配置的 UDP 目标改为 `127.0.0.1:5600`，600 帧结果：
+
+```text
+summary sent=600 streams=600 bytes=5570169 drained=0 mode=mpi-dmabuf threaded=yes elapsed=5.006s capture_fps=119.85 stream_fps=119.85 age=8.982/14.891ms wait=6.804/14.854ms buffer_setup=1.631/2.995ms sync=0.304/9.010ms send=1.050/4.989ms get=7.167/201.282ms sink=0.835/47.572ms total_since_v4l2_ts=17.510/74.372ms
+```
+
+因此 UDP 打开后真实发到主机不能达到 120fps，瓶颈在板端 wlan0 到主机的
+UDP 发包路径；loopback UDP 可以达到 120fps。
+
 ## 6. 注意事项
 
 1. 运行前要确保没有旧的 `ipc_lite` 或 probe 占用 media/V4L2/VENC。
@@ -283,4 +313,10 @@ export LD_LIBRARY_PATH=/oem/usr/lib:/usr/lib:${LD_LIBRARY_PATH:-}
 
 ```sh
 ./v4l2_mpi_venc_probe -c ./ipc_lite.1104x624p120.probe.ini -d /dev/video12 -n 1200 -b 4 --pixfmt nv12 --sensor-mode 1104x624
+```
+
+1104x624@120 UDP RTP 输出验证：
+
+```sh
+./v4l2_mpi_venc_probe -c ./ipc_lite.1104x624p120.fast.udp.ini -d /dev/video12 -n 1200 -b 4 --pixfmt nv12 --sensor-mode 1104x624
 ```
