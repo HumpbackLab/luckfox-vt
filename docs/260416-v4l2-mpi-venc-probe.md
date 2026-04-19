@@ -268,6 +268,20 @@ summary sent=600 streams=600 bytes=5570169 drained=0 mode=mpi-dmabuf threaded=ye
 因此 UDP 打开后真实发到主机不能达到 120fps，瓶颈在板端 wlan0 到主机的
 UDP 发包路径；loopback UDP 可以达到 120fps。
 
+为避免 UDP 慢时发送旧帧，`v4l2_mpi_venc_probe` 在 UDP sink 启用时会在
+每次写 socket 前丢弃 VENC 输出队列中已积压的旧编码帧，只发送本轮可见的
+最新编码帧。该策略不追随后续新产生的帧，避免 drain 循环饿死 UDP 发送。
+
+2026-04-19 使用该策略发往 `192.168.3.51:5600`，600 帧测试结果：
+
+```text
+summary sent=600 streams=274 bytes=2171324 drained=0 stream_dropped=326 mode=mpi-dmabuf threaded=yes elapsed=5.002s capture_fps=119.95 stream_fps=54.78 age=9.167/18.440ms wait=6.949/16.314ms buffer_setup=1.144/1.248ms sync=0.288/0.587ms send=0.904/7.824ms get=3.310/201.420ms sink=11.277/83.998ms total_since_v4l2_ts=27.686/103.737ms
+```
+
+这里的 `stream_fps` 是实际送进 UDP sink 的帧率；`stream_dropped` 是被丢弃
+的旧编码帧数量。capture/VENC 输入仍保持 120fps，UDP 输出保持最新帧优先，
+端到端积压从秒级降到几十毫秒级。
+
 ## 6. 注意事项
 
 1. 运行前要确保没有旧的 `ipc_lite` 或 probe 占用 media/V4L2/VENC。

@@ -71,6 +71,7 @@ typedef struct {
   unsigned int stream_frames;
   uint64_t bytes;
   uint64_t drained_total;
+  uint64_t dropped_streams;
   uint64_t capture_start_us;
   uint64_t capture_elapsed_us;
   bool capture_done;
@@ -535,11 +536,16 @@ static void *stream_thread_main(void *arg) {
   ProbeRuntime *rt = (ProbeRuntime *)arg;
   IPC_LITE_CONFIG *config = rt->config;
   VENC_STREAM_S stream;
+  VENC_STREAM_S next_stream;
   unsigned int idle_after_done = 0;
 
   memset(&stream, 0, sizeof(stream));
+  memset(&next_stream, 0, sizeof(next_stream));
   stream.pstPack = calloc(1, sizeof(*stream.pstPack));
-  if (!stream.pstPack) {
+  next_stream.pstPack = calloc(1, sizeof(*next_stream.pstPack));
+  if (!stream.pstPack || !next_stream.pstPack) {
+    free(stream.pstPack);
+    free(next_stream.pstPack);
     runtime_set_done(rt, -1);
     return NULL;
   }
@@ -553,6 +559,10 @@ static void *stream_thread_main(void *arg) {
     uint64_t packet_pts = 0;
     unsigned int stream_frame = 0;
     unsigned int sent_frames = 0;
+    unsigned int dropped_streams = 0;
+    uint64_t dropped_before = 0;
+    uint64_t consumed_after_current = 0;
+    uint64_t max_drain = 0;
     bool capture_done = false;
     bool key_frame = false;
     RK_U32 len = 0;
@@ -566,6 +576,7 @@ static void *stream_thread_main(void *arg) {
     capture_done = rt->capture_done;
     sent_frames = rt->sent_frames;
     stream_frame = rt->stream_frames;
+    dropped_before = rt->dropped_streams;
     pthread_mutex_unlock(&rt->lock);
 
     if (ret != RK_SUCCESS) {
@@ -576,6 +587,28 @@ static void *stream_thread_main(void *arg) {
       continue;
     }
     idle_after_done = 0;
+
+    consumed_after_current =
+        (uint64_t)stream_frame + dropped_before + 1ULL;
+    if (rt->sink->enabled && (uint64_t)sent_frames > consumed_after_current) {
+      max_drain = (uint64_t)sent_frames - consumed_after_current;
+    }
+
+    while (!g_stop_requested && dropped_streams < max_drain) {
+      VENC_PACK_S *released_pack = NULL;
+
+      memset(next_stream.pstPack, 0, sizeof(*next_stream.pstPack));
+      ret = RK_MPI_VENC_GetStream(config->video.venc_channel, &next_stream, 0);
+      if (ret != RK_SUCCESS) {
+        break;
+      }
+
+      RK_MPI_VENC_ReleaseStream(config->video.venc_channel, &stream);
+      released_pack = stream.pstPack;
+      stream = next_stream;
+      next_stream.pstPack = released_pack;
+      dropped_streams++;
+    }
 
     memset(&packet, 0, sizeof(packet));
     packet.data =
@@ -608,6 +641,7 @@ static void *stream_thread_main(void *arg) {
       stats_add(&rt->end_to_end, total_us);
     }
     rt->bytes += len;
+    rt->dropped_streams += dropped_streams;
     rt->stream_frames++;
     stream_frame = rt->stream_frames;
     sent_frames = rt->sent_frames;
@@ -615,15 +649,17 @@ static void *stream_thread_main(void *arg) {
 
     if (stream_frame <= 5 || stream_frame % 60 == 0) {
       printf("stream=%u sent=%u pts_age=%.3fms get=%.3fms sink=%.3fms "
-             "len=%u key=%d\n",
+             "len=%u key=%d dropped=%u\n",
              stream_frame, sent_frames,
              packet_pts ? (double)total_us / 1000.0 : 0.0,
              (double)get_elapsed_us / 1000.0,
-             (double)sink_elapsed_us / 1000.0, len, key_frame ? 1 : 0);
+             (double)sink_elapsed_us / 1000.0, len, key_frame ? 1 : 0,
+             dropped_streams);
     }
   }
 
   free(stream.pstPack);
+  free(next_stream.pstPack);
   return NULL;
 }
 
@@ -822,7 +858,8 @@ int main(int argc, char **argv) {
   runtime.capture_elapsed_us = monotonic_us() - runtime.capture_start_us;
   pthread_join(stream_thread, NULL);
 
-  printf("summary sent=%u streams=%u bytes=%llu drained=%llu mode=mpi-dmabuf "
+  printf("summary sent=%u streams=%u bytes=%llu drained=%llu "
+         "stream_dropped=%llu mode=mpi-dmabuf "
          "threaded=yes elapsed=%.3fs capture_fps=%.2f stream_fps=%.2f "
          "age=%.3f/%.3fms wait=%.3f/%.3fms "
          "buffer_setup=%.3f/%.3fms sync=%.3f/%.3fms send=%.3f/%.3fms "
@@ -830,6 +867,7 @@ int main(int argc, char **argv) {
          runtime.sent_frames, runtime.stream_frames,
          (unsigned long long)runtime.bytes,
          (unsigned long long)runtime.drained_total,
+         (unsigned long long)runtime.dropped_streams,
          (double)runtime.capture_elapsed_us / 1000000.0,
          runtime.capture_elapsed_us ? (double)runtime.sent_frames * 1000000.0 /
                                           (double)runtime.capture_elapsed_us
