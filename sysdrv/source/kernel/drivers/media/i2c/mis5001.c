@@ -562,24 +562,25 @@ static const struct regval mis5001_linear_10_1104x624_regs[] = {
 //Sensor revision:Mis5001
 //Input clock frequency:27M
 //Image output size:1104x624
-//Frame timing and frame rate:Linear 90Fps
+//Frame timing and frame rate:Linear 120.15Fps
 //System clock frequency:148.5M
-//Output interface and data rate:MIPI 2Lane RAW10 891Mbps
-//HTS = 310e/310f =0xBB8
+//Output interface and data rate:MIPI 2Lane RAW10 high-speed path
+//HTS = 310e/310f =0xA60
 //VTS = 310c/310d =0x294
 //ROI x_start/x_end = 0x02E8/0x0737
 //ROI y_start/y_end = 0x0294/0x0505
 	{0x300a, 0x01},
 	{0x3006, 0x02},
 	{REG_DELAY, 0x2d},
-	{0x3307, 0x84},
-	{0x310f, 0xb8},
-	{0x310e, 0x0b},
+	{0x3307, 0x9c},
+	{0x310f, 0x60},
+	{0x310e, 0x0a},
 	{0x4220, 0x2b},
 	{0x4221, 0x6b},
 	{0x4222, 0xab},
 	{0x4223, 0xeb},
 	{0x3011, 0x2b},
+	{0x3023, 0x01},
 	{0x3302, 0x02},
 	{0x310d, 0x94},
 	{0x310c, 0x02},
@@ -591,6 +592,14 @@ static const struct regval mis5001_linear_10_1104x624_regs[] = {
 	{0x3110, 0x02},
 	{0x3113, 0x05},
 	{0x3112, 0x05},
+	{0x3119, 0x94},
+	{0x3118, 0x02},
+	{0x311b, 0x60},
+	{0x311a, 0x0a},
+	{0x311d, 0x94},
+	{0x311c, 0x02},
+	{0x311f, 0x05},
+	{0x311e, 0x05},
 	{0x3128, 0x0f}, //FW<4096 FFF
 	{0x3129, 0xff},
 	{0x3012, 0x03},
@@ -980,10 +989,10 @@ static const struct mis5001_mode supported_modes[] = {
 		.height = 624,
 		.max_fps = {
 			.numerator = 10000,
-			.denominator = 900000,
+			.denominator = 1201500,
 		},
 		.exp_def = 0x0040,
-		.hts_def = 0xbb8,
+		.hts_def = 0xa60,
 		.vts_def = 0x294,
 		.bus_fmt = MEDIA_BUS_FMT_SGRBG10_1X10,
 		.reg_list = mis5001_linear_10_1104x624_regs,
