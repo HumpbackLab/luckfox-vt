@@ -81,6 +81,7 @@ install(FILES
   ipc_lite.720p.lowlat.rtsp.ini
   ipc_lite.720p60.fast.udp.ini
   ipc_lite.1104x624p90.fast.udp.ini
+  ipc_lite.1104x624p120.probe.ini
   ipc_lite.832x464p120.fast.udp.ini
   DESTINATION ipc_lite
 )

@@ -204,6 +204,40 @@ total_since_v4l2_ts avg ~= 24ms
 
 首帧或个别帧会有较大的 `sink` / `total` 尖峰，不应直接当成稳态平均值。
 
+### 5.5 1104x624@120 编码链路确认
+
+2026-04-19 在 `192.168.3.50` 上使用 MIS5001 原生
+`1104x624@120` sensor mode，`/dev/video12` 输出 NV12，经
+`v4l2_mpi_venc_probe` 送 MPI VENC 编码 H.264。
+
+测试配置：
+
+```sh
+./v4l2_mpi_venc_probe \
+  -c ./ipc_lite.1104x624p120.probe.ini \
+  -d /dev/video12 \
+  -n 1200 \
+  -b 4 \
+  --pixfmt nv12 \
+  --sensor-mode 1104x624
+```
+
+该配置关闭 UDP RTP 输出，只验证 V4L2 capture + MPI VENC 编码吞吐。
+
+结果：
+
+```text
+summary sent=1200 streams=1200 bytes=10203768 drained=0 mode=mpi-dmabuf threaded=yes elapsed=9.996s capture_fps=120.05 stream_fps=120.05 age=8.894/13.289ms wait=6.803/13.331ms buffer_setup=1.654/1.960ms sync=0.274/1.001ms send=1.070/6.264ms get=8.316/200.438ms sink=0.003/0.012ms total_since_v4l2_ts=15.152/31.127ms
+```
+
+结论：
+
+- 1104x624@120 下，V4L2 + MPI VENC 本身可以达到 120fps。
+- 1200 帧测试中 `sent` 与 `streams` 相等，没有用户态可见的编码掉帧。
+- dmesg 只有起流瞬间的 CSI 同步/CRC 报文，没有持续的 `PIC_SIZE_ERROR`
+  或 VENC 失败。
+- 该结论不覆盖 UDP/RTP 发送端或接收端吞吐，网络输出需要单独测试。
+
 ## 6. 注意事项
 
 1. 运行前要确保没有旧的 `ipc_lite` 或 probe 占用 media/V4L2/VENC。
@@ -243,4 +277,10 @@ cd /root/ipc_lite
 chmod +x v4l2_mpi_venc_probe
 export LD_LIBRARY_PATH=/oem/usr/lib:/usr/lib:${LD_LIBRARY_PATH:-}
 ./v4l2_mpi_venc_probe -c ./ipc_lite.720p60.fast.udp.ini -d /dev/video12 -n 0 -b 2 --drain
+```
+
+1104x624@120 编码吞吐验证：
+
+```sh
+./v4l2_mpi_venc_probe -c ./ipc_lite.1104x624p120.probe.ini -d /dev/video12 -n 1200 -b 4 --pixfmt nv12 --sensor-mode 1104x624
 ```

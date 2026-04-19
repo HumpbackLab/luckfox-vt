@@ -52,6 +52,8 @@ typedef struct {
   const char *pixfmt_name;
   RK_U32 v4l2_pixfmt;
   PIXEL_FORMAT_E mpi_pixfmt;
+  unsigned int sensor_width;
+  unsigned int sensor_height;
   unsigned int frames;
   unsigned int buffers;
   bool drain_latest;
@@ -145,19 +147,24 @@ static uint64_t mpi_frame_size(const IPC_LITE_CONFIG *config) {
   return width * height * 3 / 2;
 }
 
-static void force_sensor_mode(const IPC_LITE_CONFIG *config) {
+static void force_sensor_mode(const ProbeArgs *args,
+                              const IPC_LITE_CONFIG *config) {
   char command[256];
   int ret = 0;
+  unsigned int width = args->sensor_width ? args->sensor_width
+                                          : (unsigned int)config->video.width;
+  unsigned int height = args->sensor_height ? args->sensor_height
+                                            : (unsigned int)config->video.height;
 
   snprintf(command, sizeof(command),
            "media-ctl -d /dev/media0 --set-v4l2 "
            "\"'m00_b_mis5001 4-0031':0[fmt:SGRBG10_1X10/%dx%d]\" "
            ">/dev/null 2>&1",
-           config->video.width, config->video.height);
+           width, height);
   ret = system(command);
   if (ret != 0) {
     IPC_LITE_LOGW("v4l2_mpi", "failed to force sensor mode %dx%d",
-                  config->video.width, config->video.height);
+                  width, height);
   }
 }
 
@@ -172,11 +179,38 @@ static int xioctl(int fd, unsigned long request, void *arg) {
 static void usage(const char *prog) {
   fprintf(stderr,
           "Usage: %s [-c config.ini] [-d /dev/videoX] [-n frames] [-b buffers] "
-          "[--pixfmt nv12|nv21] [--drain]\n"
+          "[--pixfmt nv12|nv21] [--sensor-mode WxH] [--drain]\n"
           "Defaults: -c ./ipc_lite.ini -d /dev/video12 -n 300 -b 2 "
           "--pixfmt nv12\n"
+          "--sensor-mode overrides only the media-ctl sensor pad size; V4L2 "
+          "capture and VENC still use config.ini width/height.\n"
           "-n 0 means run until SIGINT/SIGTERM.\n",
           prog);
+}
+
+static int parse_size(const char *text, unsigned int *width,
+                      unsigned int *height) {
+  char *end = NULL;
+  unsigned long parsed_width = 0;
+  unsigned long parsed_height = 0;
+
+  if (!text || !*text) {
+    return -1;
+  }
+
+  parsed_width = strtoul(text, &end, 10);
+  if (end == text || (*end != 'x' && *end != 'X')) {
+    return -1;
+  }
+  parsed_height = strtoul(end + 1, &end, 10);
+  if (*end != '\0' || parsed_width == 0 || parsed_height == 0 ||
+      parsed_width > 8192 || parsed_height > 8192) {
+    return -1;
+  }
+
+  *width = (unsigned int)parsed_width;
+  *height = (unsigned int)parsed_height;
+  return 0;
 }
 
 static int parse_args(int argc, char **argv, ProbeArgs *args) {
@@ -185,6 +219,8 @@ static int parse_args(int argc, char **argv, ProbeArgs *args) {
   args->config_path = "./ipc_lite.ini";
   args->dev = "/dev/video12";
   set_pixfmt(args, "nv12");
+  args->sensor_width = 0;
+  args->sensor_height = 0;
   args->frames = 300;
   args->buffers = 2;
   args->drain_latest = false;
@@ -200,6 +236,12 @@ static int parse_args(int argc, char **argv, ProbeArgs *args) {
       args->buffers = (unsigned int)strtoul(argv[++i], NULL, 10);
     } else if (!strcmp(argv[i], "--pixfmt") && i + 1 < argc) {
       if (set_pixfmt(args, argv[++i]) != 0) {
+        return -1;
+      }
+    } else if (!strcmp(argv[i], "--sensor-mode") && i + 1 < argc) {
+      if (parse_size(argv[++i], &args->sensor_width,
+                     &args->sensor_height) != 0) {
+        fprintf(stderr, "invalid --sensor-mode, expected WxH\n");
         return -1;
       }
     } else if (!strcmp(argv[i], "--drain")) {
@@ -620,7 +662,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "v4l2_mpi_venc_probe currently supports h264 only\n");
     return 1;
   }
-  force_sensor_mode(&config);
+  force_sensor_mode(&args, &config);
   memset(&isp, 0, sizeof(isp));
   if (ipc_lite_isp_start(&isp, &config) != 0) {
     fprintf(stderr, "failed to start isp\n");
@@ -734,13 +776,17 @@ int main(int argc, char **argv) {
     char negotiated_fourcc[5];
     printf("v4l2_mpi_venc_probe dev=%s %dx%d fps=%d frames=%u buffers=%u "
            "drain=%s mode=mpi-dmabuf threaded=yes pixfmt=%s negotiated=%s "
-           "bytesperline=%u frame_size=%llu\n",
-         args.dev, config.video.width, config.video.height, config.video.fps,
-         args.frames, req.count, args.drain_latest ? "on" : "off",
+           "sensor=%ux%u bytesperline=%u frame_size=%llu\n",
+           args.dev, config.video.width, config.video.height, config.video.fps,
+           args.frames, req.count, args.drain_latest ? "on" : "off",
            args.pixfmt_name,
            fourcc_to_str(fmt.fmt.pix_mp.pixelformat, negotiated_fourcc),
+           args.sensor_width ? args.sensor_width
+                             : (unsigned int)config.video.width,
+           args.sensor_height ? args.sensor_height
+                              : (unsigned int)config.video.height,
            fmt.fmt.pix_mp.plane_fmt[0].bytesperline,
-         (unsigned long long)frame_size);
+           (unsigned long long)frame_size);
   }
 
   memset(&runtime, 0, sizeof(runtime));
