@@ -6,6 +6,7 @@ cd $_DIR
 export PATH=$PATH:/oem/usr/ko/
 
 RTL8812AU_SKIP_RKWIFI_SERVER=0
+RTL8812AU_USE_WPA_SUPPLICANT=0
 WIFI_MODE_FILE=/userdata/wifi_mode
 
 insmod_if_present() {
@@ -17,6 +18,24 @@ insmod_if_present() {
 
 have_cmd() {
 	command -v "$1" >/dev/null 2>&1
+}
+
+wait_wpa_completed() {
+	if ! have_cmd wpa_cli; then
+		return 0
+	fi
+
+	i=0
+	while [ "$i" -lt "${RTL8812AU_WPA_TIMEOUT:-20}" ]; do
+		if wpa_cli -i wlan0 status 2>/dev/null | grep -q '^wpa_state=COMPLETED$'; then
+			return 0
+		fi
+		sleep 1
+		i=$((i + 1))
+	done
+
+	echo "wlan0 WPA association did not complete before DHCP timeout."
+	return 1
 }
 
 get_wifi_mode() {
@@ -66,13 +85,19 @@ start_wifi_userspace() {
 		return 0
 	fi
 
-	if have_cmd rkwifi_server; then
+	if [ "$RTL8812AU_USE_WPA_SUPPLICANT" != "1" ] && have_cmd rkwifi_server; then
 		echo "wlan0 present. Starting rkwifi_server."
 		rkwifi_server start &
 		return 0
 	fi
 
-	if have_cmd wpa_supplicant && [ -f /etc/wpa_supplicant.conf ]; then
+	if [ -f /data/wpa_supplicant.conf ]; then
+		wpa_conf=/data/wpa_supplicant.conf
+	else
+		wpa_conf=/etc/wpa_supplicant.conf
+	fi
+
+	if have_cmd wpa_supplicant && [ -f "$wpa_conf" ]; then
 		echo "wlan0 present. Starting wpa_supplicant."
 		ifconfig wlan0 up
 		killall wpa_supplicant 2>/dev/null || true
@@ -80,9 +105,10 @@ start_wifi_userspace() {
 		killall udhcpc 2>/dev/null || true
 		rm -rf /var/run/wpa_supplicant 2>/dev/null || true
 		mkdir -p /var/run/wpa_supplicant
-		wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf >/dev/null 2>&1 || \
-			wpa_supplicant -B -D nl80211 -i wlan0 -c /etc/wpa_supplicant.conf >/dev/null 2>&1 || \
+		wpa_supplicant -B -i wlan0 -c "$wpa_conf" >/dev/null 2>&1 || \
+			wpa_supplicant -B -D nl80211 -i wlan0 -c "$wpa_conf" >/dev/null 2>&1 || \
 			return 1
+		wait_wpa_completed || return 1
 		if have_cmd dhcpcd; then
 			dhcpcd wlan0 -AL -t 0 &
 		elif have_cmd udhcpc; then
@@ -97,17 +123,23 @@ start_wifi_userspace() {
 }
 
 load_rtl8812au_module() {
-	for module in rtl88xxau_wfb.ko 88XXau_wfb.ko 8812au.ko; do
+	for module in 8812au.ko rtl88xxau_wfb.ko 88XXau_wfb.ko; do
 		if [ -f "/oem/usr/ko/$module" ]; then
 			insmod_if_present libarc4.ko
 			insmod_if_present cfg80211.ko
 			insmod_if_present mac80211.ko
-			insmod "/oem/usr/ko/$module"
-			case "$module" in
-			*_wfb.ko)
-				RTL8812AU_SKIP_RKWIFI_SERVER=1
-				;;
-			esac
+			if [ "$module" = "8812au.ko" ]; then
+				RTL8812AU_USE_WPA_SUPPLICANT=1
+				insmod "/oem/usr/ko/$module" \
+					rtw_country_code="${RTL8812AU_COUNTRY_CODE:-CN}" \
+					rtw_power_mgnt=0 \
+					rtw_ips_mode=0 \
+					rtw_enusbss=0 \
+					rtw_dynamic_agg_enable=0 \
+					rtw_vht_enable=0
+			else
+				insmod "/oem/usr/ko/$module"
+			fi
 			return 0
 		fi
 	done
