@@ -524,10 +524,16 @@ static void *stream_thread_main(void *arg) {
     }
     idle_after_done = 0;
 
-    consumed_after_current =
-        (uint64_t)stream_frame + dropped_before + 1ULL;
-    if (rt->sink->enabled && (uint64_t)sent_frames > consumed_after_current) {
-      max_drain = (uint64_t)sent_frames - consumed_after_current;
+    consumed_after_current = (uint64_t)stream_frame + dropped_before + 1ULL;
+    if (rt->sink->enabled) {
+      uint64_t normal_inflight =
+          config->video.venc_buffer_count > 1
+              ? (uint64_t)config->video.venc_buffer_count
+              : 2ULL;
+      if ((uint64_t)sent_frames > consumed_after_current + normal_inflight) {
+        max_drain =
+            (uint64_t)sent_frames - consumed_after_current - normal_inflight;
+      }
     }
 
     while (!g_stop_requested && dropped_streams < max_drain) {
