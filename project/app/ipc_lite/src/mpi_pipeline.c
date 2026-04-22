@@ -457,8 +457,7 @@ static int venc_init(const IPC_LITE_CONFIG *config) {
   attr.stVencAttr.u32PicWidth = (RK_U32)config->video.width;
   attr.stVencAttr.u32PicHeight = (RK_U32)config->video.height;
   attr.stVencAttr.u32VirWidth = IPC_LITE_ALIGN((RK_U32)config->video.width, 16);
-  attr.stVencAttr.u32VirHeight =
-      IPC_LITE_ALIGN((RK_U32)config->video.height, 16);
+  attr.stVencAttr.u32VirHeight = (RK_U32)config->video.height;
   attr.stVencAttr.u32StreamBufCnt = (RK_U32)config->video.venc_buffer_count;
 
   ret = RK_MPI_VENC_CreateChn(config->video.venc_channel, &attr);
