@@ -34,24 +34,10 @@ VIDIOC_DQBUF
 RK_MPI_VENC_SendFrame
 ```
 
-默认像素格式：
+固定像素格式：
 
 ```text
---pixfmt nv12
-```
-
-保留的可选格式：
-
-```text
---pixfmt nv12
---pixfmt nv21
-```
-
-其中映射关系是：
-
-```text
-nv12 -> V4L2_PIX_FMT_NV12 + RK_FMT_YUV420SP
-nv21 -> V4L2_PIX_FMT_NV21 + RK_FMT_YUV420SP_VU
+V4L2_PIX_FMT_NV12 + RK_FMT_YUV420SP
 ```
 
 ## 3. 常用命令
@@ -93,22 +79,13 @@ cd /root/ipc_lite
 - UDP RTP 是否正常发送
 - 板端各阶段耗时是否异常
 
-### 3.3 NV21 对照
-
-```sh
-cd /root/ipc_lite
-./v4l2_mpi_venc_probe -c ./ipc_lite.720p60.fast.udp.ini -d /dev/video12 -n 60 -b 2 --drain --pixfmt nv21
-```
-
-目前默认仍用 `nv12`。`nv21` 只作为颜色异常时的快速对照。
-
 ## 4. 输出指标
 
 典型日志：
 
 ```text
 v4l2_mpi_venc_probe dev=/dev/video12 1280x720 fps=60 frames=60 buffers=2
-drain=on mode=mpi-dmabuf pixfmt=nv12 negotiated=NV12 bytesperline=1280 frame_size=1382400
+drain=on mode=mpi-dmabuf format=NV12 negotiated=NV12 bytesperline=1280 frame_size=1382400
 
 frame=60 seq=60 age=13.871ms send=5.012ms sync=0.822ms get=11.037ms sink=24.344ms total_since_v4l2_ts=25.362ms len=8067 key=0 drained=0
 
@@ -161,7 +138,7 @@ sink=2.797/24.344ms total_since_v4l2_ts=24.032/63.228ms
 Y=8.0[8,8] U=128.0[128,128] V=128.0[128,128]
 ```
 
-也就是 V4L2 拿到的是固定空帧。QGC 看到的绿画面不是接收端问题，也不是简单的 NV12/NV21 问题，而是 probe 没有把 ISP 正常拉起来。
+也就是 V4L2 拿到的是固定空帧。QGC 看到的绿画面不是接收端问题，而是 probe 没有把 ISP 正常拉起来。
 
 当前 probe 已和主程序一样先启动：
 
@@ -175,8 +152,7 @@ ipc_lite_isp_start()
 
 尝试过：
 
-- `NV12`
-- `NV21`
+- 固定 `NV12`
 - cache flush
 - `mmap-copy`
 - MPI MMZ uncached buffer
@@ -217,9 +193,7 @@ total_since_v4l2_ts avg ~= 24ms
   -c ./ipc_lite.1104x624p120.probe.ini \
   -d /dev/video12 \
   -n 1200 \
-  -b 4 \
-  --pixfmt nv12 \
-  --sensor-mode 1104x624
+  -b 4
 ```
 
 该配置关闭 UDP RTP 输出，只验证 V4L2 capture + MPI VENC 编码吞吐。
@@ -245,9 +219,7 @@ UDP RTP 打开后的对照测试：
   -c ./ipc_lite.1104x624p120.fast.udp.ini \
   -d /dev/video12 \
   -n 1200 \
-  -b 4 \
-  --pixfmt nv12 \
-  --sensor-mode 1104x624
+  -b 4
 ```
 
 发往当前主机 `192.168.3.51:5600` 时，1200 帧测试结果：
@@ -326,11 +298,11 @@ export LD_LIBRARY_PATH=/oem/usr/lib:/usr/lib:${LD_LIBRARY_PATH:-}
 1104x624@120 编码吞吐验证：
 
 ```sh
-./v4l2_mpi_venc_probe -c ./ipc_lite.1104x624p120.probe.ini -d /dev/video12 -n 1200 -b 4 --pixfmt nv12 --sensor-mode 1104x624
+./v4l2_mpi_venc_probe -c ./ipc_lite.1104x624p120.probe.ini -d /dev/video12 -n 1200 -b 4
 ```
 
 1104x624@120 UDP RTP 输出验证：
 
 ```sh
-./v4l2_mpi_venc_probe -c ./ipc_lite.1104x624p120.fast.udp.ini -d /dev/video12 -n 1200 -b 4 --pixfmt nv12 --sensor-mode 1104x624
+./v4l2_mpi_venc_probe -c ./ipc_lite.1104x624p120.fast.udp.ini -d /dev/video12 -n 1200 -b 4
 ```

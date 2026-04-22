@@ -49,11 +49,6 @@ typedef struct {
 typedef struct {
   const char *config_path;
   const char *dev;
-  const char *pixfmt_name;
-  RK_U32 v4l2_pixfmt;
-  PIXEL_FORMAT_E mpi_pixfmt;
-  unsigned int sensor_width;
-  unsigned int sensor_height;
   unsigned int frames;
   unsigned int buffers;
   bool drain_latest;
@@ -96,23 +91,6 @@ static const char *fourcc_to_str(RK_U32 fourcc, char out[5]) {
   return out;
 }
 
-static int set_pixfmt(ProbeArgs *args, const char *name) {
-  if (!strcmp(name, "nv12")) {
-    args->pixfmt_name = "nv12";
-    args->v4l2_pixfmt = V4L2_PIX_FMT_NV12;
-    args->mpi_pixfmt = RK_FMT_YUV420SP;
-    return 0;
-  }
-  if (!strcmp(name, "nv21")) {
-    args->pixfmt_name = "nv21";
-    args->v4l2_pixfmt = V4L2_PIX_FMT_NV21;
-    args->mpi_pixfmt = RK_FMT_YUV420SP_VU;
-    return 0;
-  }
-  fprintf(stderr, "unsupported pixfmt: %s (supported: nv12, nv21)\n", name);
-  return -1;
-}
-
 static uint64_t monotonic_us(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -148,14 +126,11 @@ static uint64_t mpi_frame_size(const IPC_LITE_CONFIG *config) {
   return width * height * 3 / 2;
 }
 
-static void force_sensor_mode(const ProbeArgs *args,
-                              const IPC_LITE_CONFIG *config) {
+static void force_sensor_mode(const IPC_LITE_CONFIG *config) {
   char command[256];
   int ret = 0;
-  unsigned int width = args->sensor_width ? args->sensor_width
-                                          : (unsigned int)config->video.width;
-  unsigned int height = args->sensor_height ? args->sensor_height
-                                            : (unsigned int)config->video.height;
+  unsigned int width = (unsigned int)config->video.width;
+  unsigned int height = (unsigned int)config->video.height;
 
   snprintf(command, sizeof(command),
            "media-ctl -d /dev/media0 --set-v4l2 "
@@ -179,39 +154,11 @@ static int xioctl(int fd, unsigned long request, void *arg) {
 
 static void usage(const char *prog) {
   fprintf(stderr,
-          "Usage: %s [-c config.ini] [-d /dev/videoX] [-n frames] [-b buffers] "
-          "[--pixfmt nv12|nv21] [--sensor-mode WxH] [--drain]\n"
-          "Defaults: -c ./ipc_lite.ini -d /dev/video12 -n 300 -b 2 "
-          "--pixfmt nv12\n"
-          "--sensor-mode overrides only the media-ctl sensor pad size; V4L2 "
-          "capture and VENC still use config.ini width/height.\n"
+          "Usage: %s [-c config.ini|config.ini] [-n frames] [--drain]\n"
+          "Advanced: [-d /dev/videoX] [-b buffers]\n"
+          "Defaults: -c ./ipc_lite.ini -d /dev/video12 -n 300 -b 2 format=NV12\n"
           "-n 0 means run until SIGINT/SIGTERM.\n",
           prog);
-}
-
-static int parse_size(const char *text, unsigned int *width,
-                      unsigned int *height) {
-  char *end = NULL;
-  unsigned long parsed_width = 0;
-  unsigned long parsed_height = 0;
-
-  if (!text || !*text) {
-    return -1;
-  }
-
-  parsed_width = strtoul(text, &end, 10);
-  if (end == text || (*end != 'x' && *end != 'X')) {
-    return -1;
-  }
-  parsed_height = strtoul(end + 1, &end, 10);
-  if (*end != '\0' || parsed_width == 0 || parsed_height == 0 ||
-      parsed_width > 8192 || parsed_height > 8192) {
-    return -1;
-  }
-
-  *width = (unsigned int)parsed_width;
-  *height = (unsigned int)parsed_height;
-  return 0;
 }
 
 static int parse_args(int argc, char **argv, ProbeArgs *args) {
@@ -219,15 +166,14 @@ static int parse_args(int argc, char **argv, ProbeArgs *args) {
 
   args->config_path = "./ipc_lite.ini";
   args->dev = "/dev/video12";
-  set_pixfmt(args, "nv12");
-  args->sensor_width = 0;
-  args->sensor_height = 0;
   args->frames = 300;
   args->buffers = 2;
   args->drain_latest = false;
 
   for (i = 1; i < argc; ++i) {
-    if (!strcmp(argv[i], "-c") && i + 1 < argc) {
+    if (argv[i][0] != '-') {
+      args->config_path = argv[i];
+    } else if (!strcmp(argv[i], "-c") && i + 1 < argc) {
       args->config_path = argv[++i];
     } else if (!strcmp(argv[i], "-d") && i + 1 < argc) {
       args->dev = argv[++i];
@@ -235,16 +181,6 @@ static int parse_args(int argc, char **argv, ProbeArgs *args) {
       args->frames = (unsigned int)strtoul(argv[++i], NULL, 10);
     } else if (!strcmp(argv[i], "-b") && i + 1 < argc) {
       args->buffers = (unsigned int)strtoul(argv[++i], NULL, 10);
-    } else if (!strcmp(argv[i], "--pixfmt") && i + 1 < argc) {
-      if (set_pixfmt(args, argv[++i]) != 0) {
-        return -1;
-      }
-    } else if (!strcmp(argv[i], "--sensor-mode") && i + 1 < argc) {
-      if (parse_size(argv[++i], &args->sensor_width,
-                     &args->sensor_height) != 0) {
-        fprintf(stderr, "invalid --sensor-mode, expected WxH\n");
-        return -1;
-      }
     } else if (!strcmp(argv[i], "--drain")) {
       args->drain_latest = true;
     } else if (!strcmp(argv[i], "--help")) {
@@ -348,7 +284,7 @@ static void fill_h264_rc(VENC_CHN_ATTR_S *attr, const IPC_LITE_CONFIG *config) {
   attr->stRcAttr.stH264Cbr.u32StatTime = 1;
 }
 
-static int venc_init(const IPC_LITE_CONFIG *config, PIXEL_FORMAT_E pixfmt) {
+static int venc_init(const IPC_LITE_CONFIG *config) {
   VENC_CHN_ATTR_S attr;
   VENC_CHN_PARAM_S chn_param;
   VENC_RECV_PIC_PARAM_S recv_param;
@@ -363,7 +299,7 @@ static int venc_init(const IPC_LITE_CONFIG *config, PIXEL_FORMAT_E pixfmt) {
   attr.stVencAttr.u32Profile = H264E_PROFILE_HIGH;
   attr.stVencAttr.u32MaxPicWidth = (RK_U32)config->video.max_width;
   attr.stVencAttr.u32MaxPicHeight = (RK_U32)config->video.max_height;
-  attr.stVencAttr.enPixelFormat = pixfmt;
+  attr.stVencAttr.enPixelFormat = RK_FMT_YUV420SP;
   attr.stVencAttr.enMirror = MIRROR_NONE;
   attr.stVencAttr.u32BufSize = frame_size;
   attr.stVencAttr.bByFrame = RK_TRUE;
@@ -501,7 +437,7 @@ static void *capture_thread_main(void *arg) {
     frame.stVFrame.u32Height = (RK_U32)config->video.height;
     frame.stVFrame.u32VirWidth = ALIGN_UP((RK_U32)config->video.width, 16U);
     frame.stVFrame.u32VirHeight = ALIGN_UP((RK_U32)config->video.height, 16U);
-    frame.stVFrame.enPixelFormat = rt->args.mpi_pixfmt;
+    frame.stVFrame.enPixelFormat = RK_FMT_YUV420SP;
     frame.stVFrame.enCompressMode = COMPRESS_MODE_NONE;
     frame.stVFrame.u64PTS = ts_us ? ts_us : dq_done_us;
 
@@ -698,7 +634,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "v4l2_mpi_venc_probe currently supports h264 only\n");
     return 1;
   }
-  force_sensor_mode(&args, &config);
+  force_sensor_mode(&config);
   memset(&isp, 0, sizeof(isp));
   if (ipc_lite_isp_start(&isp, &config) != 0) {
     fprintf(stderr, "failed to start isp\n");
@@ -723,7 +659,7 @@ int main(int argc, char **argv) {
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
   fmt.fmt.pix_mp.width = (unsigned int)config.video.width;
   fmt.fmt.pix_mp.height = (unsigned int)config.video.height;
-  fmt.fmt.pix_mp.pixelformat = args.v4l2_pixfmt;
+  fmt.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_NV12;
   fmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
   fmt.fmt.pix_mp.num_planes = 1;
   if (xioctl(fd, VIDIOC_S_FMT, &fmt) == -1) {
@@ -748,7 +684,7 @@ int main(int argc, char **argv) {
     close(fd);
     return 1;
   }
-  if (venc_init(&config, args.mpi_pixfmt) != 0) {
+  if (venc_init(&config) != 0) {
     RK_MPI_SYS_Exit();
     close(fd);
     return 1;
@@ -811,16 +747,12 @@ int main(int argc, char **argv) {
   {
     char negotiated_fourcc[5];
     printf("v4l2_mpi_venc_probe dev=%s %dx%d fps=%d frames=%u buffers=%u "
-           "drain=%s mode=mpi-dmabuf threaded=yes pixfmt=%s negotiated=%s "
+           "drain=%s mode=mpi-dmabuf threaded=yes format=NV12 negotiated=%s "
            "sensor=%ux%u bytesperline=%u frame_size=%llu\n",
            args.dev, config.video.width, config.video.height, config.video.fps,
            args.frames, req.count, args.drain_latest ? "on" : "off",
-           args.pixfmt_name,
            fourcc_to_str(fmt.fmt.pix_mp.pixelformat, negotiated_fourcc),
-           args.sensor_width ? args.sensor_width
-                             : (unsigned int)config.video.width,
-           args.sensor_height ? args.sensor_height
-                              : (unsigned int)config.video.height,
+           (unsigned int)config.video.width, (unsigned int)config.video.height,
            fmt.fmt.pix_mp.plane_fmt[0].bytesperline,
            (unsigned long long)frame_size);
   }
